@@ -3,6 +3,7 @@ import {
   CROCKFORD_BASE32,
   encodeUlid,
   makeUlidFactory,
+  ulidBoundsForTimeRange,
 } from "../src/core/ids.js";
 
 // 16 zero bytes — used to assert that the random tail is encoded exactly,
@@ -90,6 +91,50 @@ describe("makeUlidFactory", () => {
     expect(ulid).toHaveLength(26);
     expect(ulid.slice(0, 10)).toBe("0000000000");
     for (const ch of ulid) expect(CROCKFORD_BASE32).toContain(ch);
+  });
+});
+
+describe("ulidBoundsForTimeRange", () => {
+  // The bounds are the read-side counterpart to encodeUlid: audit_query uses
+  // them as `audit_id BETWEEN :lo AND :hi` on the GSI sort key. The lower
+  // bound has zero-byte randomness, the upper bound has all-0xFF randomness,
+  // so a row written at exactly `since.getTime()` is included (zero-byte tail
+  // sorts at-or-before any real ULID for that ms) and similarly at `until`.
+
+  it("returns floor + ceiling when both ends are unset", () => {
+    const { lo, hi } = ulidBoundsForTimeRange();
+    expect(lo).toBe("00000000000000000000000000");
+    expect(hi).toBe("7ZZZZZZZZZZZZZZZZZZZZZZZZZ");
+  });
+
+  it("encodes since with a zero-byte random tail (inclusive lower bound)", () => {
+    const since = new Date(Date.UTC(2026, 4, 21, 10, 0, 0, 0));
+    const { lo } = ulidBoundsForTimeRange(since, undefined);
+    // Tail (chars 10..26) is all zeros — sorts at-or-before any real ULID
+    // generated at the same millisecond.
+    expect(lo.slice(10)).toBe("0000000000000000");
+    // The time prefix decodes back to the same ms.
+    expect(decodeBase32Ms(lo.slice(0, 10))).toBe(since.getTime());
+  });
+
+  it("encodes until with an all-0xFF random tail (inclusive upper bound)", () => {
+    const until = new Date(Date.UTC(2026, 4, 21, 23, 59, 59, 999));
+    const { hi } = ulidBoundsForTimeRange(undefined, until);
+    expect(hi.slice(10)).toBe("ZZZZZZZZZZZZZZZZ");
+    expect(decodeBase32Ms(hi.slice(0, 10))).toBe(until.getTime());
+  });
+
+  it("returns lo < hi for a normal range so DDB BETWEEN is satisfiable", () => {
+    const since = new Date(Date.UTC(2026, 4, 1, 0, 0, 0, 0));
+    const until = new Date(Date.UTC(2026, 4, 31, 0, 0, 0, 0));
+    const { lo, hi } = ulidBoundsForTimeRange(since, until);
+    expect(lo < hi).toBe(true);
+  });
+
+  it("rejects a since > until range so callers see the bug, not silent empty results", () => {
+    const since = new Date(Date.UTC(2026, 4, 21, 12, 0, 0, 0));
+    const until = new Date(Date.UTC(2026, 4, 21, 11, 0, 0, 0));
+    expect(() => ulidBoundsForTimeRange(since, until)).toThrow(/since.*until/i);
   });
 });
 

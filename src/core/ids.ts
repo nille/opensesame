@@ -84,6 +84,40 @@ function encodeRandom(random: Uint8Array): string {
   return out;
 }
 
+// Read-side counterpart to encodeUlid: audit_query (ADR-0020) uses the bounds
+// as `audit_id BETWEEN :lo AND :hi` on GSI1's sort key. The lower bound is
+// the canonical zero ULID at `since.ms` (random tail = 16 zero chars), the
+// upper bound is the canonical max ULID at `until.ms` (random tail = 16 'Z'
+// chars). DDB BETWEEN is inclusive on both ends, so a row written at exactly
+// `since.ms` lex-sorts after `lo` (any non-zero random tail beats all zeros)
+// and a row written at exactly `until.ms` lex-sorts at-or-before `hi` (any
+// random tail loses to all-Z). When a bound is omitted we fall back to the
+// 48-bit floor / ceiling so the query still ranges across the whole table.
+const TIME_FLOOR = "0000000000";
+const TIME_CEILING = "7ZZZZZZZZZ"; // 2^48 - 1 in Crockford base32, 10 chars.
+const RANDOM_FLOOR = "0000000000000000";
+const RANDOM_CEILING = "ZZZZZZZZZZZZZZZZ";
+
+export function ulidBoundsForTimeRange(
+  since?: Date,
+  until?: Date,
+): { lo: string; hi: string } {
+  if (since !== undefined && until !== undefined && since.getTime() > until.getTime()) {
+    throw new RangeError(
+      `ulidBoundsForTimeRange: since (${since.toISOString()}) is after until (${until.toISOString()})`,
+    );
+  }
+  const lo =
+    since === undefined
+      ? TIME_FLOOR + RANDOM_FLOOR
+      : encodeTime(since.getTime()) + RANDOM_FLOOR;
+  const hi =
+    until === undefined
+      ? TIME_CEILING + RANDOM_CEILING
+      : encodeTime(until.getTime()) + RANDOM_CEILING;
+  return { lo, hi };
+}
+
 function defaultRandomBytes(): Uint8Array {
   const buf = new Uint8Array(RANDOM_BYTES);
   randomFillSync(buf);

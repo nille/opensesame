@@ -87,6 +87,33 @@ describe("DataPlaneStack — MessageBodyChunks table", () => {
   });
 });
 
+describe("DataPlaneStack — AuditLog table", () => {
+  it("provisions GSI1 on (principal, audit_id) for audit_query (ADR-0020)", () => {
+    // ADR-0020: the read path range-scans by audit_id (ULID = lex-sortable
+    // by attempt time) within a single principal partition. ALL projection
+    // because the audit table is small and the cost of a follow-up GetItem
+    // per result outweighs the storage overhead.
+    const t = synth();
+    t.hasResourceProperties("AWS::DynamoDB::Table", {
+      KeySchema: [{ AttributeName: "audit_id", KeyType: "HASH" }],
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "GSI1",
+          KeySchema: [
+            { AttributeName: "principal", KeyType: "HASH" },
+            { AttributeName: "audit_id", KeyType: "RANGE" },
+          ],
+          Projection: { ProjectionType: "ALL" },
+        }),
+      ]),
+      AttributeDefinitions: Match.arrayWith([
+        { AttributeName: "audit_id", AttributeType: "S" },
+        { AttributeName: "principal", AttributeType: "S" },
+      ]),
+    });
+  });
+});
+
 describe("DataPlaneStack — BounceLog table", () => {
   it("creates BounceLog keyed by ses_message_id (PK) + event_id (SK) (ADR-0018)", () => {
     const t = synth();
@@ -103,10 +130,25 @@ describe("DataPlaneStack — BounceLog table", () => {
   });
 });
 
-describe("DataPlaneStack — table count and stable logical IDs", () => {
-  it("creates exactly the four ADR-0013 + ADR-0016 + ADR-0018 tables (no speculative extras)", () => {
+describe("DataPlaneStack — Suppressions table", () => {
+  it("creates Suppressions keyed by recipient (PK only) (ADR-0019)", () => {
+    // ADR-0019: PK=recipient (lowercased email) — no SK because we keep the
+    // single canonical row per address (last-event-wins on the conditional
+    // upsert). RETAIN + PITR like the other forensic tables.
     const t = synth();
-    t.resourceCountIs("AWS::DynamoDB::Table", 4);
+    t.hasResourceProperties("AWS::DynamoDB::Table", {
+      KeySchema: [{ AttributeName: "recipient", KeyType: "HASH" }],
+      AttributeDefinitions: Match.arrayWith([
+        { AttributeName: "recipient", AttributeType: "S" },
+      ]),
+    });
+  });
+});
+
+describe("DataPlaneStack — table count and stable logical IDs", () => {
+  it("creates exactly the five ADR-0013 + ADR-0016 + ADR-0018 + ADR-0019 tables (no speculative extras)", () => {
+    const t = synth();
+    t.resourceCountIs("AWS::DynamoDB::Table", 5);
   });
 
   it("pins stable logical IDs per ADR-0011 (renaming forces destructive replace)", () => {
@@ -119,6 +161,7 @@ describe("DataPlaneStack — table count and stable logical IDs", () => {
     expect(ids).toContain(expectIdContaining(ids, "MessageBodyChunks"));
     expect(ids).toContain(expectIdContaining(ids, "AuditLog"));
     expect(ids).toContain(expectIdContaining(ids, "BounceLog"));
+    expect(ids).toContain(expectIdContaining(ids, "Suppressions"));
   });
 });
 

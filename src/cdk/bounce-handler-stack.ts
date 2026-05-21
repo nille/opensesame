@@ -69,6 +69,10 @@ const CONFIG_SET_NAME = "opensesame-default";
 export type BounceHandlerStackProps = StackProps & {
   messagesTable: Table;
   bounceLogTable: Table;
+  // Suppressions table (ADR-0019). The handler upserts a row per recipient
+  // on permanent-bounce/complaint events so future sends to that address
+  // are blocked at the pre-flight gate.
+  suppressionsTable: Table;
   // Name of the GSI1 the Lambda uses to locate the outbound row by SES
   // message id. The DataPlaneStack's Messages table only exposes the index
   // name through the L2 construct, so we plumb it explicitly to keep the
@@ -142,6 +146,7 @@ export class BounceHandlerStack extends Stack {
       environment: {
         OPENSESAME_MESSAGES_TABLE: props.messagesTable.tableName,
         OPENSESAME_BOUNCE_LOG_TABLE: props.bounceLogTable.tableName,
+        OPENSESAME_SUPPRESSIONS_TABLE: props.suppressionsTable.tableName,
         OPENSESAME_MESSAGES_GSI1: props.messageIdGsiName ?? "GSI1",
       },
     });
@@ -151,10 +156,12 @@ export class BounceHandlerStack extends Stack {
     this.bounceHandler.addEventSource(new SnsEventSource(this.eventsTopic));
 
     // IAM grants. The Lambda needs Query on Messages (GSI1 lookup),
-    // UpdateItem on Messages (delivery_status projection), and PutItem on
-    // BounceLog (forensic record).
+    // UpdateItem on Messages (delivery_status projection), PutItem on
+    // BounceLog (forensic record), and PutItem on Suppressions (idempotent
+    // upsert per ADR-0019).
     props.messagesTable.grantReadWriteData(this.bounceHandler);
     props.bounceLogTable.grantWriteData(this.bounceHandler);
+    props.suppressionsTable.grantWriteData(this.bounceHandler);
 
     new CfnOutput(this, "ConfigurationSetName", {
       value: this.configurationSet.configurationSetName,

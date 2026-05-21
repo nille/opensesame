@@ -23,6 +23,9 @@ export type AuditAttemptInput = {
   bcc?: string[];
   subject: string;
   rfcMessageId: string;
+  // ADR-0019: forwarded onto the attempt row so audit queries can tell
+  // which sends bypassed the suppression-list check.
+  allowSuppressed?: boolean;
 };
 
 export type AuditAttemptDeps = {
@@ -43,6 +46,28 @@ export type AuditAttempt = {
   subject_hash: string;
   rfc_message_id: string;
   requested_at: string;
+  // ADR-0019: present and `true` only when the operator passed an explicit
+  // override to bypass the suppression-list pre-flight check. Absent on
+  // unguarded sends so the default row shape is unchanged.
+  allow_suppressed?: true;
+};
+
+export type AuditBlocked = {
+  audit_id: string;
+  schema_v: "1";
+  type: "send_blocked";
+  principal: string;
+  agent_id: string | null;
+  from: string;
+  to: string;
+  cc?: string;
+  bcc?: string;
+  subject_hash: string;
+  rfc_message_id: string;
+  requested_at: string;
+  // Joined "alice@x.com, bob@y.com" — same format as `to`/`cc`/`bcc`.
+  blocked_recipients: string;
+  block_reason: "suppression_list";
 };
 
 export type AuditSuccessOutcome = {
@@ -64,6 +89,10 @@ export type AuditOutcome = AuditSuccessOutcome | AuditFailureOutcome;
 export interface AuditLog {
   recordAttempt(attempt: AuditAttempt): Promise<void>;
   recordOutcome(outcome: AuditOutcome): Promise<void>;
+  // ADR-0019: terminal row written when the suppression-list pre-flight
+  // check refuses a send. No `recordOutcome` follows — the audit query
+  // surfaces send_blocked alongside send_succeeded / send_failed.
+  recordBlocked(blocked: AuditBlocked): Promise<void>;
 }
 
 export function makeAuditAttempt(
@@ -90,7 +119,35 @@ export function makeAuditAttempt(
   // and matches the tsconfig's exactOptionalPropertyTypes setting.
   if (input.cc && input.cc.length > 0) attempt.cc = input.cc.join(", ");
   if (input.bcc && input.bcc.length > 0) attempt.bcc = input.bcc.join(", ");
+  if (input.allowSuppressed === true) attempt.allow_suppressed = true;
   return attempt;
+}
+
+export function makeAuditBlocked(
+  input: AuditAttemptInput & { blockedRecipients: string[] },
+  deps: AuditAttemptDeps,
+): AuditBlocked {
+  const randomBytes = deps.randomBytes ?? defaultRandomBytes;
+  const now = deps.now();
+  const auditId = encodeUlid(now.getTime(), randomBytes());
+
+  const blocked: AuditBlocked = {
+    audit_id: auditId,
+    schema_v: "1",
+    type: "send_blocked",
+    principal: SOLO_DIRECT_PRINCIPAL,
+    agent_id: null,
+    from: input.from,
+    to: input.to.join(", "),
+    subject_hash: hashSubject(input.subject),
+    rfc_message_id: input.rfcMessageId,
+    requested_at: now.toISOString(),
+    blocked_recipients: input.blockedRecipients.join(", "),
+    block_reason: "suppression_list",
+  };
+  if (input.cc && input.cc.length > 0) blocked.cc = input.cc.join(", ");
+  if (input.bcc && input.bcc.length > 0) blocked.bcc = input.bcc.join(", ");
+  return blocked;
 }
 
 export function makeSuccessOutcome(input: {

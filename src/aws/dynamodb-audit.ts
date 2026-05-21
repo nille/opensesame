@@ -3,7 +3,12 @@ import {
   UpdateCommand,
   type DynamoDBDocumentClient,
 } from "@aws-sdk/lib-dynamodb";
-import type { AuditLog, AuditOutcome, AuditAttempt } from "../core/audit.js";
+import type {
+  AuditAttempt,
+  AuditBlocked,
+  AuditLog,
+  AuditOutcome,
+} from "../core/audit.js";
 
 // DDB-backed implementation of the AuditLog port (ADR-0008 + ADR-0016).
 //
@@ -25,6 +30,7 @@ export function makeDynamoAuditLog(deps: DynamoAuditLogDeps): AuditLog {
   return {
     recordAttempt: (attempt) => recordAttempt(deps, attempt),
     recordOutcome: (outcome) => recordOutcome(deps, outcome),
+    recordBlocked: (blocked) => recordBlocked(deps, blocked),
   };
 }
 
@@ -36,6 +42,20 @@ async function recordAttempt(
     new PutCommand({
       TableName: deps.auditTable,
       Item: attempt,
+    }),
+  );
+}
+
+async function recordBlocked(
+  deps: DynamoAuditLogDeps,
+  blocked: AuditBlocked,
+): Promise<void> {
+  // ADR-0019: terminal row, no later UpdateItem follows. PutCommand on the
+  // same audit_id PK shape as send_attempted; the row's `type` discriminates.
+  await deps.client.send(
+    new PutCommand({
+      TableName: deps.auditTable,
+      Item: blocked,
     }),
   );
 }

@@ -21,11 +21,13 @@ import {
 } from "aws-cdk-lib/aws-s3";
 import type { Construct } from "constructs";
 
-// Data plane (per ADR-0011 + ADR-0013 + ADR-0016 + ADR-0018):
+// Data plane (per ADR-0011 + ADR-0013 + ADR-0016 + ADR-0018 + ADR-0019 + ADR-0020):
 //   - Messages           PK=address, SK=internal_id, GSI1 on message_id+received_at
 //   - MessageBodyChunks  PK=internal_id, SK=chunk_seq
-//   - AuditLog           PK=audit_id (ULID, lex-sortable by attempt time)
+//   - AuditLog           PK=audit_id (ULID, lex-sortable by attempt time),
+//                        GSI1 on (principal, audit_id) for audit_query
 //   - BounceLog          PK=ses_message_id, SK=event_id (per-event forensic store)
+//   - Suppressions       PK=recipient (lowercased) — send-time block list
 //   - Raw MIME bucket    versioning ON, BPA, lifecycle to Glacier Deep Archive
 //   - EventBridge bus    target for MailIngested
 //
@@ -37,6 +39,7 @@ export class DataPlaneStack extends Stack {
   readonly bodyChunksTable: Table;
   readonly auditTable: Table;
   readonly bounceLogTable: Table;
+  readonly suppressionsTable: Table;
   readonly rawMimeBucket: Bucket;
   readonly eventBus: EventBus;
 
@@ -69,10 +72,11 @@ export class DataPlaneStack extends Stack {
       removalPolicy: RemovalPolicy.RETAIN,
     });
 
-    // Audit log (ADR-0008 + ADR-0016). Single PK on audit_id (ULID — already
-    // lex-sortable by attempt time). No GSI in slice 2; audit_query (ADR-0007)
-    // arrives in a later slice and will pin the GSI shape (likely on
-    // (principal, audit_id)). RETAIN because audit data is forensic.
+    // Audit log (ADR-0008 + ADR-0016 + ADR-0020). Single PK on audit_id
+    // (ULID — already lex-sortable by attempt time). GSI1 added in slice 6
+    // for audit_query: (principal, audit_id) lets the read path range-scan
+    // by time on the SK and filter by agent_id/address via FilterExpression.
+    // RETAIN because audit data is forensic.
     this.auditTable = new Table(this, "AuditLog", {
       tableName: this.scoped("audit"),
       partitionKey: { name: "audit_id", type: AttributeType.STRING },
@@ -80,6 +84,12 @@ export class DataPlaneStack extends Stack {
       encryption: TableEncryption.AWS_MANAGED,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
       removalPolicy: RemovalPolicy.RETAIN,
+    });
+    this.auditTable.addGlobalSecondaryIndex({
+      indexName: "GSI1",
+      partitionKey: { name: "principal", type: AttributeType.STRING },
+      sortKey: { name: "audit_id", type: AttributeType.STRING },
+      projectionType: ProjectionType.ALL,
     });
 
     // BounceLog (ADR-0018). One row per delivery event published by SES via
@@ -91,6 +101,21 @@ export class DataPlaneStack extends Stack {
       tableName: this.scoped("bounces"),
       partitionKey: { name: "ses_message_id", type: AttributeType.STRING },
       sortKey: { name: "event_id", type: AttributeType.STRING },
+      billingMode: BillingMode.PAY_PER_REQUEST,
+      encryption: TableEncryption.AWS_MANAGED,
+      pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
+      removalPolicy: RemovalPolicy.RETAIN,
+    });
+
+    // Suppressions (ADR-0019). One canonical row per lowercased recipient
+    // address. Updated by the bounce handler on permanent-bounce/complaint
+    // events; read at send-time by sendWithAudit's pre-flight gate. No SK
+    // because the upsert is conditional on last_event_at — we keep a single
+    // last-event-wins row rather than per-event history (BounceLog is the
+    // forensic record). PITR + RETAIN match the other forensic tables.
+    this.suppressionsTable = new Table(this, "Suppressions", {
+      tableName: this.scoped("suppressions"),
+      partitionKey: { name: "recipient", type: AttributeType.STRING },
       billingMode: BillingMode.PAY_PER_REQUEST,
       encryption: TableEncryption.AWS_MANAGED,
       pointInTimeRecoverySpecification: { pointInTimeRecoveryEnabled: true },
@@ -139,6 +164,9 @@ export class DataPlaneStack extends Stack {
     });
     new CfnOutput(this, "BounceLogTableName", {
       value: this.bounceLogTable.tableName,
+    });
+    new CfnOutput(this, "SuppressionsTableName", {
+      value: this.suppressionsTable.tableName,
     });
     new CfnOutput(this, "RawMimeBucketName", {
       value: this.rawMimeBucket.bucketName,

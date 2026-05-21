@@ -79,5 +79,6 @@ if (hostedZoneId && hostedZoneName) {
     env,
     messagesTable: data.messagesTable,
     bounceLogTable: data.bounceLogTable,
+    suppressionsTable: data.suppressionsTable,
   });
 }

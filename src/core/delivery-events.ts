@@ -1,4 +1,4 @@
-// Pure parser + handler for SES delivery events (ADR-0018).
+// Pure parser + handler for SES delivery events (ADR-0018, ADR-0019).
 //
 // SES publishes Bounce, Complaint, and DeliveryDelay events to a configuration
 // set's event destination — for our deployment, an SNS topic. The bounce-
@@ -11,8 +11,13 @@
 //   - the status mapping (`deriveDeliveryStatus`)
 //   - the orchestrator (`handleDeliveryEvent`) that calls into ports
 //
-// Adapters (DDB-bound BounceLogWriter + MessageStatusUpdater + the SNS-event
-// reader) live in src/aws.
+// Adapters (DDB-bound BounceLogWriter + MessageStatusUpdater + SuppressionWriter
+// + the SNS-event reader) live in src/aws.
+
+import type {
+  SuppressionReason,
+  SuppressionWriter,
+} from "./suppression.js";
 
 // --- public types ---
 
@@ -91,6 +96,15 @@ export type DeliveryEventHandlerDeps = {
   // the SES message id. Same construction as ADR-0017's
   // `makeSesRewrittenMessageId`.
   awsRegion: string;
+  // ADR-0019: optional. When configured, the handler upserts a
+  // Suppressions row per recipient on suppressing categories
+  // (`bounce_permanent`, `complaint`). Deployments that haven't shipped
+  // slice 5 omit this and the bounce handler keeps working as in slice 4.
+  suppression?: SuppressionWriter;
+  // Side-channel for non-fatal suppression-write failures. The forensic
+  // BounceLog row already landed; a missing suppression row is recoverable
+  // by replay. Defaults to a no-op.
+  warn?: (message: string) => void;
 };
 
 // --- public API ---
@@ -255,8 +269,10 @@ export function parseSnsDeliveryEvent(
 }
 
 // Orchestrator: persist forensic record first, then project status onto
-// Messages. Order is load-bearing — if the Messages update fails we still
-// have the BounceLog record (forensic invariant).
+// Messages, then upsert per-recipient suppressions. Order is load-bearing —
+// if any later step fails we still have the BounceLog record (forensic
+// invariant). The suppression upsert is non-fatal: a missing Suppressions
+// row is recoverable by replay from BounceLog.
 export async function handleDeliveryEvent(
   event: DeliveryEvent,
   deps: DeliveryEventHandlerDeps,
@@ -276,8 +292,48 @@ export async function handleDeliveryEvent(
     event_at: event.event_at,
   });
 
+  // ADR-0019: third write — suppressions. Only suppressing categories
+  // produce upserts. Failures here log a warning but don't roll back the
+  // earlier writes.
+  if (deps.suppression) {
+    const reason = suppressionReasonFor(event.category);
+    if (reason !== null) {
+      for (const recipient of event.recipients) {
+        try {
+          await deps.suppression.upsert({
+            recipient,
+            reason,
+            event_at: event.event_at,
+            ses_message_id: event.ses_message_id,
+            event_id: event.event_id,
+          });
+        } catch (err) {
+          const m = err instanceof Error ? err.message : String(err);
+          (deps.warn ?? noop)(
+            `suppression upsert failed for ${recipient} (event ${event.event_id}): ${m}`,
+          );
+        }
+      }
+    }
+  }
+
   return { status, messageRowUpdated: updated };
 }
+
+function suppressionReasonFor(
+  category: BounceCategory,
+): SuppressionReason | null {
+  switch (category) {
+    case "bounce_permanent":
+      return "bounced_permanent";
+    case "complaint":
+      return "complained";
+    default:
+      return null;
+  }
+}
+
+function noop(_: string): void {}
 
 // --- helpers ---
 

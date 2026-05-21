@@ -21,6 +21,7 @@ function synthAll() {
     env: ENV,
     messagesTable: data.messagesTable,
     bounceLogTable: data.bounceLogTable,
+    suppressionsTable: data.suppressionsTable,
   });
   return {
     bounceTemplate: Template.fromStack(bounce),
@@ -99,16 +100,20 @@ describe("BounceHandlerStack — Lambda function + DLQ", () => {
     });
   });
 
-  it("plumbs Messages + BounceLog table names through env vars", () => {
-    // The handler reads OPENSESAME_MESSAGES_TABLE and
-    // OPENSESAME_BOUNCE_LOG_TABLE at cold start; if either is missing the
-    // Lambda throws on the first invocation rather than silently no-op'ing.
+  it("plumbs Messages + BounceLog + Suppressions table names through env vars", () => {
+    // The handler reads OPENSESAME_MESSAGES_TABLE,
+    // OPENSESAME_BOUNCE_LOG_TABLE, and OPENSESAME_SUPPRESSIONS_TABLE at cold
+    // start; if a required one is missing the Lambda throws on the first
+    // invocation rather than silently no-op'ing. Suppressions is optional in
+    // the handler code (slice-4 deployments work without it) but the CDK
+    // stack always provisions it now.
     const { bounceTemplate } = synthAll();
     bounceTemplate.hasResourceProperties("AWS::Lambda::Function", {
       Environment: {
         Variables: Match.objectLike({
           OPENSESAME_MESSAGES_TABLE: Match.anyValue(),
           OPENSESAME_BOUNCE_LOG_TABLE: Match.anyValue(),
+          OPENSESAME_SUPPRESSIONS_TABLE: Match.anyValue(),
           OPENSESAME_MESSAGES_GSI1: "GSI1",
         }),
       },
@@ -141,11 +146,12 @@ describe("BounceHandlerStack — Lambda function + DLQ", () => {
 });
 
 describe("BounceHandlerStack — IAM grants on data plane tables", () => {
-  it("grants Query + UpdateItem on Messages and PutItem on BounceLog", () => {
+  it("grants Query + UpdateItem on Messages and PutItem on BounceLog + Suppressions", () => {
     // Messages: Query GSI1 (by message_id), UpdateItem (delivery_status
-    // projection). BounceLog: PutItem (forensic write). Pin the action
-    // shape loosely — CDK appends BatchGet/Get when granting RW — but
-    // assert the load-bearing actions are present.
+    // projection). BounceLog: PutItem (forensic write). Suppressions:
+    // PutItem (idempotent upsert per ADR-0019). Pin the action shape
+    // loosely — CDK appends BatchGet/Get when granting RW — but assert
+    // the load-bearing actions are present.
     const { bounceTemplate } = synthAll();
     bounceTemplate.hasResourceProperties("AWS::IAM::Policy", {
       PolicyDocument: Match.objectLike({
@@ -162,6 +168,16 @@ describe("BounceHandlerStack — IAM grants on data plane tables", () => {
         ]),
       }),
     });
+  });
+
+  it("grants write access scoped to the Suppressions table ARN", () => {
+    // Loose assertion — CDK groups grantWriteData calls into per-table
+    // statements, but we want to make sure the Suppressions ARN is
+    // referenced somewhere in the Lambda's policy.
+    const { bounceTemplate } = synthAll();
+    const policies = bounceTemplate.findResources("AWS::IAM::Policy");
+    const policyJson = JSON.stringify(policies);
+    expect(policyJson).toMatch(/Suppressions/);
   });
 });
 

@@ -20,6 +20,11 @@
 //   OPENSESAME_BODY_CHUNKS_TABLE
 //   OPENSESAME_RAW_MIME_BUCKET
 //
+// Optional env (ADR-0019):
+//   OPENSESAME_SUPPRESSIONS_TABLE — when set, sendWithAudit consults the
+//     list before calling SES and refuses sends to suppressed recipients
+//     unless `--allow-suppressed` is passed.
+//
 // Layer 2 of ADR-0008 (the IAM `ses:FromAddress` policy condition) is not
 // wired in this slice — the CLI runs under the operator's admin profile.
 // When the send path moves into a Lambda or MCP-server role, the role will
@@ -34,8 +39,10 @@ import { persistOutbound } from "../core/persist-outbound.js";
 import { sendWithAudit } from "../core/send-with-audit.js";
 import { makeDynamoAuditLog } from "../aws/dynamodb-audit.js";
 import { makeDynamoMessageStore } from "../aws/dynamodb.js";
+import { makeDynamoSuppressionList } from "../aws/dynamodb-suppression.js";
 import { makeS3RawMessageWriter } from "../aws/s3-raw-store.js";
 import { makeSesOutboundMailer } from "../aws/ses.js";
+import { SuppressionBlockError } from "../core/suppression.js";
 
 type Args = {
   region: string;
@@ -44,6 +51,12 @@ type Args = {
   bodyChunksTable: string;
   rawMimeBucket: string;
   configurationSetName: string | null;
+  // ADR-0019: optional. When set, the CLI constructs a SuppressionList
+  // and the pre-flight gate runs before SES.send.
+  suppressionsTable: string | null;
+  // ADR-0019: explicit per-invocation override — bypass the suppression
+  // check. Audit row records `allow_suppressed: true` for forensics.
+  allowSuppressed: boolean;
   compose: ComposeInput;
 };
 
@@ -57,9 +70,16 @@ function parseArgs(argv: string[]): Args {
   const cc: string[] = [];
   const bcc: string[] = [];
   let references: string[] | undefined;
+  let allowSuppressed = false;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // Boolean flags have no value, so handle them before the value-bearing
+    // cases that need `argv[i + 1]`.
+    if (a === "--allow-suppressed") {
+      allowSuppressed = true;
+      continue;
+    }
     const next = argv[i + 1];
     if (!next) break;
     switch (a) {
@@ -106,7 +126,8 @@ function parseArgs(argv: string[]): Args {
   if (from === null || subject === null || bodyText === null || to.length === 0) {
     throw new Error(
       "usage: send-email --from <addr> --to <addr> [--to ...] --subject <s> --text <s> " +
-        "[--cc ...] [--bcc ...] [--html <s>] [--in-reply-to <id>] [--references \"<id1> <id2>\"]",
+        "[--cc ...] [--bcc ...] [--html <s>] [--in-reply-to <id>] [--references \"<id1> <id2>\"] " +
+        "[--allow-suppressed]",
     );
   }
 
@@ -122,6 +143,10 @@ function parseArgs(argv: string[]): Args {
   // Optional in solo-direct mode (slice 4 not deployed yet); when present,
   // SES emits Bounce/Complaint/DeliveryDelay events to the destination.
   const configurationSetName = process.env["OPENSESAME_SES_CONFIG_SET"] ?? null;
+  // ADR-0019: optional. Slice-4-only deployments leave this unset and the
+  // pre-flight gate is skipped (back-compat).
+  const suppressionsTable =
+    process.env["OPENSESAME_SUPPRESSIONS_TABLE"] ?? null;
 
   return {
     region: requireEnv("AWS_REGION"),
@@ -130,6 +155,8 @@ function parseArgs(argv: string[]): Args {
     bodyChunksTable: requireEnv("OPENSESAME_BODY_CHUNKS_TABLE"),
     rawMimeBucket: requireEnv("OPENSESAME_RAW_MIME_BUCKET"),
     configurationSetName,
+    suppressionsTable,
+    allowSuppressed,
     compose,
   };
 }
@@ -174,13 +201,26 @@ async function main(): Promise<void> {
   if (args.compose.cc !== undefined) sendInput.cc = args.compose.cc;
   if (args.compose.bcc !== undefined) sendInput.bcc = args.compose.bcc;
 
-  const result = await sendWithAudit({
+  // Build SendWithAuditDeps without ever assigning undefined to the optional
+  // fields — exactOptionalPropertyTypes forbids that.
+  const sendDeps: Parameters<typeof sendWithAudit>[0] = {
     mailer,
     auditLog,
     input: sendInput,
     now: () => new Date(),
     warn: (m) => process.stderr.write(`[warn] ${m}\n`),
-  });
+  };
+  if (args.suppressionsTable !== null) {
+    sendDeps.suppressionList = makeDynamoSuppressionList({
+      client: ddb,
+      suppressionsTable: args.suppressionsTable,
+    });
+  }
+  if (args.allowSuppressed) {
+    sendDeps.allowSuppressed = true;
+  }
+
+  const result = await sendWithAudit(sendDeps);
 
   // ADR-0017: persist the outbound copy after SES accepted. Failure here is
   // degraded but acceptable — the message went out and audit closed cleanly.
@@ -233,6 +273,17 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  // ADR-0019: blocked sends are a normal terminal state, not a crash. Print
+  // the offender list to stderr without the stack and exit non-zero with a
+  // distinctive code so smoke drivers can branch on it.
+  if (err instanceof SuppressionBlockError) {
+    process.stderr.write(`send-email blocked: ${err.message}\n`);
+    process.stderr.write(
+      "Pass --allow-suppressed to override (audit row records the override).\n",
+    );
+    process.exitCode = 2;
+    return;
+  }
   process.stderr.write(`send-email failed: ${(err as Error).stack ?? err}\n`);
   process.exitCode = 1;
 });
