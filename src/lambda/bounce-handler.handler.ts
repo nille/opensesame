@@ -1,0 +1,42 @@
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import {
+  makeDynamoBounceLogWriter,
+  makeDynamoMessageStatusUpdater,
+} from "../aws/dynamodb-bounce-log.js";
+import { makeBounceHandler } from "./bounce-handler.js";
+
+// Production Lambda entry for the SES bounce/complaint/delivery-delay
+// handler (ADR-0018). Wired by BounceHandlerStack to an SNS topic that the
+// SES configuration set publishes to.
+
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`missing required env var: ${name}`);
+  return v;
+}
+
+const region = requireEnv("AWS_REGION");
+const messagesTable = requireEnv("OPENSESAME_MESSAGES_TABLE");
+const bounceLogTable = requireEnv("OPENSESAME_BOUNCE_LOG_TABLE");
+// GSI1 on the Messages table — the same index inbound reads use to thread
+// replies. Required for locating the outbound row from the SES message id.
+const messageIdGsiName = process.env["OPENSESAME_MESSAGES_GSI1"] ?? "GSI1";
+
+const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
+
+const bounceLog = makeDynamoBounceLogWriter({
+  client: ddb,
+  bounceLogTable,
+});
+const messageStatus = makeDynamoMessageStatusUpdater({
+  client: ddb,
+  messagesTable,
+  messageIdGsiName,
+});
+
+export const handler = makeBounceHandler({
+  awsRegion: region,
+  bounceLog,
+  messageStatus,
+});

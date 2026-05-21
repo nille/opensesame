@@ -1,0 +1,14 @@
+node_modules/
+dist/
+coverage/
+.scratch/
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example
+.envrc
+cdk.out/
+.cdk.staging/
+cdk.outputs.json
+.claude/settings.local.json

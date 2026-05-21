@@ -1,0 +1,39 @@
+{
+  "name": "opensesame",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "smoke:ingest": "tsx src/bin/smoke-ingest.ts",
+    "replay:ingest": "tsx src/bin/replay-ingest.ts",
+    "get:message": "tsx src/bin/get-message.ts",
+    "list:inbox": "tsx src/bin/list-inbox.ts",
+    "send:email": "tsx src/bin/send-email.ts",
+    "cdk": "cdk",
+    "cdk:synth": "cdk synth",
+    "cdk:diff": "cdk diff",
+    "cdk:deploy": "cdk deploy",
+    "cdk:bootstrap": "cdk bootstrap"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.161",
+    "@types/node": "^22.7.0",
+    "aws-cdk": "^2.1124.1",
+    "aws-cdk-lib": "^2.256.1",
+    "constructs": "^10.6.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.22.3",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1050.0",
+    "@aws-sdk/client-eventbridge": "^3.1050.0",
+    "@aws-sdk/client-s3": "^3.1051.0",
+    "@aws-sdk/client-sesv2": "^3.1051.0",
+    "@aws-sdk/lib-dynamodb": "^3.1050.0"
+  }
+}
