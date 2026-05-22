@@ -4,6 +4,7 @@ import { EventBridgeClient } from "@aws-sdk/client-eventbridge";
 import { S3Client } from "@aws-sdk/client-s3";
 import { makeDynamoMessageStore } from "../aws/dynamodb.js";
 import { makeEventBridgePublisher } from "../aws/eventbridge.js";
+import { makeS3AttachmentWriter } from "../aws/s3-attachment-store.js";
 import { makeIngestHandler } from "./ingest.js";
 
 // Production Lambda entry. Reads env vars supplied by the ComputePlaneStack
@@ -39,6 +40,8 @@ const store = makeDynamoMessageStore({
   client: ddb,
   messagesTable,
   bodyChunksTable,
+  attachmentWriter: makeS3AttachmentWriter({ client: s3 }),
+  attachmentBucket: rawMimeBucket,
 });
 const publish = makeEventBridgePublisher({
   client: eb,

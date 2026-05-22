@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 export type ParsedHeaders = {
   from: string | null;
   to: string | null;
@@ -27,6 +29,19 @@ export type AttachmentSummary = {
   contentType: string;
   sizeBytes: number;
   contentId: string | null;
+  // Sequential index across all attachments in the message (0-based,
+  // pre-order traversal of the part tree). Used as the S3 key suffix so
+  // download URLs are stable for the lifetime of the message.
+  partIndex: number;
+  // Decoded bytes of the part body. base64 / quoted-printable are decoded
+  // from their transfer encoding; 7bit/8bit/binary fall through as the
+  // UTF-8 encoding of the body string. For binary attachments, senders
+  // should use base64 (the realistic default) — we don't try to recover
+  // 8-bit binary that's been mauled by the upstream UTF-8 decode.
+  bytes: Uint8Array;
+  // Lowercase hex SHA-256 of the bytes. Used by the writer for S3 ETag
+  // verification + dedupe across messages.
+  sha256: string;
 };
 
 export type ParsedMessage = {
@@ -153,7 +168,14 @@ function walkPart(
 
       if (disposition.type === "attachment") {
         acc.attachments.push(
-          buildAttachmentSummary(part, partCt, disposition, partHeaders),
+          buildAttachmentSummary(
+            part,
+            partCt,
+            partEnc,
+            disposition,
+            partHeaders,
+            acc.attachments.length,
+          ),
         );
         continue;
       }
@@ -216,15 +238,25 @@ function decodeEncodedWords(input: string): string {
 }
 
 function decodeBase64Utf8(input: string): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(decodeBase64Bytes(input));
+}
+
+function decodeBase64Bytes(input: string): Uint8Array {
   // Strip whitespace per RFC 2045 §6.8 — base64 is permitted line-wrapped.
   const stripped = input.replace(/\s+/g, "");
   const binary = atob(stripped);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  return bytes;
 }
 
 function decodeQuotedPrintable(input: string): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(
+    decodeQuotedPrintableBytes(input),
+  );
+}
+
+function decodeQuotedPrintableBytes(input: string): Uint8Array {
   // Drop soft line breaks: a literal "=" at end of a line means "no break".
   const collapsed = input.replace(/=\r?\n/g, "");
   const bytes: number[] = [];
@@ -242,7 +274,7 @@ function decodeQuotedPrintable(input: string): string {
     // We pass it through as-is and let the UTF-8 decoder handle it.
     bytes.push(ch.charCodeAt(0) & 0xff);
   }
-  return new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(bytes));
+  return new Uint8Array(bytes);
 }
 
 type Disposition = {
@@ -270,18 +302,50 @@ function parseContentDisposition(raw: string | null): Disposition {
 function buildAttachmentSummary(
   part: MimePart,
   ct: ContentType,
+  encoding: string,
   disposition: Disposition,
   headers: HeaderMap,
+  partIndex: number,
 ): AttachmentSummary {
   const filename =
     disposition.params.get("filename") ?? ct.params.get("name") ?? null;
   const contentId = headerValue(headers, "content-id");
+  const bytes = decodeAttachmentBytes(part.body, encoding);
   return {
     filename,
     contentType: ct.type,
-    sizeBytes: new TextEncoder().encode(part.body).length,
+    sizeBytes: bytes.length,
     contentId,
+    partIndex,
+    bytes,
+    sha256: sha256Hex(bytes),
   };
+}
+
+function decodeAttachmentBytes(body: string, encoding: string): Uint8Array {
+  switch (encoding) {
+    case "base64":
+      return decodeBase64Bytes(body);
+    case "quoted-printable":
+      return decodeQuotedPrintableBytes(body);
+    case "":
+    case "7bit":
+    case "8bit":
+    case "binary":
+    default:
+      // Body string came in via UTF-8 decode of the raw envelope; for
+      // attachments declared as 7bit/8bit/binary this is best-effort.
+      // Real binary content should be base64 — every spec-following MUA
+      // does this — and that path is lossless above.
+      return new TextEncoder().encode(body);
+  }
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  // Node's crypto is available in every runtime we ship to (Lambda + the
+  // BFF). Avoiding the async subtle-crypto API keeps parseMime synchronous,
+  // which the rest of the pipeline relies on.
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 type MimePart = { headersBlob: string; body: string };

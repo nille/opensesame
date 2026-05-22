@@ -78,6 +78,19 @@ export type StoredMessageHeaders = {
   list_id: string | null;
 };
 
+// Attachment projection on the read side. The bytes themselves live in S3
+// under attachments/{address}/{internal_id}/{partIndex} — readers that need
+// them resolve via the get_attachment RPC, which mints a presigned URL.
+// snake_case mirrors the DDB-stored shape.
+export type StoredAttachment = {
+  filename: string | null;
+  content_type: string;
+  size_bytes: number;
+  content_id: string | null;
+  part_index: number;
+  sha256: string;
+};
+
 export type ReadMessageOk = {
   parse_status: "ok";
   schema_v: "1";
@@ -91,6 +104,14 @@ export type ReadMessageOk = {
   // ADR-0017: present on every read (defaults to "in" when the row was
   // written before slice 3 and has no `direction` attribute).
   direction: MessageDirection;
+  // Attachment summaries, possibly empty. Bytes are not inlined — clients
+  // that want the file resolve via get_attachment.
+  attachments: StoredAttachment[];
+  // ISO-8601 timestamp the row was first marked read by an operator client,
+  // or null when still unread. Attribute-absent on the DDB row collapses to
+  // null so older messages projected through the reader are unread by default
+  // until the slice 8.2 backfill stamps `read_at = received_at` on them.
+  read_at: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -127,6 +148,9 @@ export type InboxRowOk = {
   snippet: string;
   // ADR-0017: defaults to "in" when the row predates slice 3.
   direction: MessageDirection;
+  // null when the row has never been opened (or was written before slice 8.2);
+  // ISO-8601 timestamp once an operator client called mark_read.
+  read_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -157,6 +181,15 @@ export type ListInboxResult = {
   next_cursor: string | null;
 };
 
+// Result of mark_read. Distinguishes a no-op (already read) from a fresh
+// stamp so the BFF can return both 200 paths without a write churn for the
+// idempotent case. `not_found` is its own variant so the dispatcher can map
+// to 404 without having to re-Get the row.
+export type MarkReadResult =
+  | { kind: "marked"; read_at: string }
+  | { kind: "already_read"; read_at: string }
+  | { kind: "not_found" };
+
 export interface MessageReader {
   getByMessageId(messageId: string): Promise<ReadMessage | null>;
   getByPrimaryKey(
@@ -164,4 +197,22 @@ export interface MessageReader {
     internalId: string,
   ): Promise<ReadMessage | null>;
   listInbox(input: ListInboxInput): Promise<ListInboxResult>;
+  // Stamp `read_at = now` on the row identified by RFC 5322 Message-ID, but
+  // only when no `read_at` is set yet. When already set, returns the existing
+  // value without writing — the read timestamp tracks first-open, not last-open.
+  //
+  // Self-addressed mail produces two rows (in + out) sharing one Message-ID;
+  // GSI1 disambiguation here picks whichever DDB returns first. UIs that
+  // already hold the inbox row's primary key should prefer markReadByPrimaryKey
+  // to avoid stamping the wrong direction. This overload remains for callers
+  // (MCP, future API consumers) that only have a Message-ID in hand.
+  markRead(messageId: string, now: Date): Promise<MarkReadResult>;
+  // Direct primary-key variant — no GSI hop, no direction ambiguity. The UI
+  // calls this from the inbox row, where (address, internal_id) is already in
+  // hand. Idempotent in the same way as markRead.
+  markReadByPrimaryKey(
+    address: string,
+    internalId: string,
+    now: Date,
+  ): Promise<MarkReadResult>;
 }

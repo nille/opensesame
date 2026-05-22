@@ -159,6 +159,172 @@ describe("parseMime", () => {
     expect(parsed.bodyHtml).toBeNull();
   });
 
+  // ------------------------------------------------------------------
+  // Byte extraction — slice 8.1: attachments need the actual bytes for
+  // S3 storage + presigned download. base64 / quoted-printable are the
+  // realistic encodings for binary parts; 7bit/8bit/binary fall through
+  // to UTF-8 of the body string and are not lossless for binary content.
+  // ------------------------------------------------------------------
+
+  it("extracts base64-encoded attachment bytes losslessly", () => {
+    // A small but unmistakably binary payload — high bytes the UTF-8
+    // decoder would mangle if the parser tried to decode through string.
+    const bytes = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xd8, 0xff, 0xe0,
+      0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+    ]);
+    const b64 = Buffer.from(bytes).toString("base64");
+
+    const raw = enc.encode(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: binary attachment",
+        'Content-Type: multipart/mixed; boundary="b3"',
+        "",
+        "--b3",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "--b3",
+        "Content-Type: image/png",
+        'Content-Disposition: attachment; filename="x.png"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        b64,
+        "--b3--",
+        "",
+      ].join("\r\n"),
+    );
+
+    const parsed = parseMime(raw);
+
+    expect(parsed.attachments).toHaveLength(1);
+    const att = parsed.attachments[0]!;
+    expect(att.filename).toBe("x.png");
+    expect(att.contentType).toBe("image/png");
+    expect(att.partIndex).toBe(0);
+    expect(Array.from(att.bytes)).toEqual(Array.from(bytes));
+    expect(att.sizeBytes).toBe(bytes.length);
+    // sha256 hex of the bytes — used for dedupe + S3 ETag verification.
+    expect(att.sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("extracts quoted-printable text attachment bytes as UTF-8", () => {
+    // QP-encoded "Hej Björn — räkning"
+    const original = "Hej Björn — räkning";
+    const qp = "Hej Bj=C3=B6rn =E2=80=94 r=C3=A4kning";
+    const expectedBytes = enc.encode(original);
+
+    const raw = enc.encode(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: txt attachment",
+        'Content-Type: multipart/mixed; boundary="b4"',
+        "",
+        "--b4",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "--b4",
+        "Content-Type: text/plain; charset=utf-8",
+        'Content-Disposition: attachment; filename="note.txt"',
+        "Content-Transfer-Encoding: quoted-printable",
+        "",
+        qp,
+        "--b4--",
+        "",
+      ].join("\r\n"),
+    );
+
+    const parsed = parseMime(raw);
+
+    expect(parsed.attachments).toHaveLength(1);
+    const att = parsed.attachments[0]!;
+    expect(att.filename).toBe("note.txt");
+    expect(Array.from(att.bytes)).toEqual(Array.from(expectedBytes));
+    expect(att.sizeBytes).toBe(expectedBytes.length);
+  });
+
+  it("assigns sequential partIndex across multiple attachments", () => {
+    const a = Buffer.from(new Uint8Array([1, 2, 3, 4])).toString("base64");
+    const b = Buffer.from(new Uint8Array([5, 6, 7, 8, 9])).toString("base64");
+
+    const raw = enc.encode(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: two atts",
+        'Content-Type: multipart/mixed; boundary="b5"',
+        "",
+        "--b5",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "--b5",
+        "Content-Type: application/octet-stream",
+        'Content-Disposition: attachment; filename="a.bin"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        a,
+        "--b5",
+        "Content-Type: application/octet-stream",
+        'Content-Disposition: attachment; filename="b.bin"',
+        "Content-Transfer-Encoding: base64",
+        "",
+        b,
+        "--b5--",
+        "",
+      ].join("\r\n"),
+    );
+
+    const parsed = parseMime(raw);
+
+    expect(parsed.attachments).toHaveLength(2);
+    expect(parsed.attachments[0]!.partIndex).toBe(0);
+    expect(parsed.attachments[1]!.partIndex).toBe(1);
+    expect(parsed.attachments[0]!.filename).toBe("a.bin");
+    expect(parsed.attachments[1]!.filename).toBe("b.bin");
+    expect(parsed.attachments[0]!.sizeBytes).toBe(4);
+    expect(parsed.attachments[1]!.sizeBytes).toBe(5);
+    // sha256 must differ for different content
+    expect(parsed.attachments[0]!.sha256).not.toBe(parsed.attachments[1]!.sha256);
+  });
+
+  it("falls back to Content-Type name= when Content-Disposition has no filename", () => {
+    const bytes = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const b64 = Buffer.from(bytes).toString("base64");
+
+    const raw = enc.encode(
+      [
+        "From: Alice <alice@example.com>",
+        "To: Bob <bob@example.com>",
+        "Subject: name fallback",
+        'Content-Type: multipart/mixed; boundary="b6"',
+        "",
+        "--b6",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "body",
+        "--b6",
+        'Content-Type: application/octet-stream; name="legacy.bin"',
+        "Content-Disposition: attachment",
+        "Content-Transfer-Encoding: base64",
+        "",
+        b64,
+        "--b6--",
+        "",
+      ].join("\r\n"),
+    );
+
+    const parsed = parseMime(raw);
+
+    expect(parsed.attachments).toHaveLength(1);
+    expect(parsed.attachments[0]!.filename).toBe("legacy.bin");
+    expect(Array.from(parsed.attachments[0]!.bytes)).toEqual(Array.from(bytes));
+  });
+
   it("decodes a quoted-printable text/plain body into UTF-8", () => {
     // "Hej Bj=C3=B6rn, =C3=A5=C3=A4=C3=B6" → "Hej Björn, åäö"
     // Plus a soft line break (=\r\n) which must be removed.

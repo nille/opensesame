@@ -40,6 +40,7 @@ import { sendWithAudit } from "../core/send-with-audit.js";
 import { makeDynamoAuditLog } from "../aws/dynamodb-audit.js";
 import { makeDynamoMessageStore } from "../aws/dynamodb.js";
 import { makeDynamoSuppressionList } from "../aws/dynamodb-suppression.js";
+import { makeS3AttachmentWriter } from "../aws/s3-attachment-store.js";
 import { makeS3RawMessageWriter } from "../aws/s3-raw-store.js";
 import { makeSesOutboundMailer } from "../aws/ses.js";
 import { SuppressionBlockError } from "../core/suppression.js";
@@ -227,13 +228,14 @@ async function main(): Promise<void> {
   // Surface the error to stderr so operator runs see the cause.
   let persisted: Awaited<ReturnType<typeof persistOutbound>> | null = null;
   try {
-    const rawWriter = makeS3RawMessageWriter({
-      client: new S3Client({ region: args.region }),
-    });
+    const s3 = new S3Client({ region: args.region });
+    const rawWriter = makeS3RawMessageWriter({ client: s3 });
     const store = makeDynamoMessageStore({
       client: ddb,
       messagesTable: args.messagesTable,
       bodyChunksTable: args.bodyChunksTable,
+      attachmentWriter: makeS3AttachmentWriter({ client: s3 }),
+      attachmentBucket: args.rawMimeBucket,
     });
     persisted = await persistOutbound(
       {

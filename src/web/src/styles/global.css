@@ -1,0 +1,94 @@
+@import "./tokens.css";
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Focus ring — visible only for keyboard users; consistent across the app. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Mono utility — never mix with proportional sans on the same word. */
+.mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "ss01", "ss02", "calt", "zero";
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.muted { color: var(--ink-muted); }
+.faint { color: var(--ink-faint); }
+
+/* App shell — three regions, fills viewport, no scroll on the shell itself. */
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--rail-w) var(--inbox-w) 1fr;
+  height: 100vh;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.app-shell > * {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* Theme transition — paper + ink only. Accent snaps on purpose. */
+body,
+.app-shell,
+.rail,
+.inbox-list,
+.reader {
+  transition:
+    background-color var(--d-fast) var(--ease-out),
+    color var(--d-fast) var(--ease-out),
+    border-color var(--d-fast) var(--ease-out);
+}

@@ -23,9 +23,11 @@ import { basename, resolve } from "node:path";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
 import { EventBridgeClient } from "@aws-sdk/client-eventbridge";
+import { S3Client } from "@aws-sdk/client-s3";
 import { handleRawMail } from "../core/handle-raw-mail.js";
 import { makeDynamoMessageStore } from "../aws/dynamodb.js";
 import { makeEventBridgePublisher } from "../aws/eventbridge.js";
+import { makeS3AttachmentWriter } from "../aws/s3-attachment-store.js";
 
 type Args = { emlPath: string; address: string };
 
@@ -69,11 +71,14 @@ async function main(): Promise<void> {
     new DynamoDBClient({ region }),
   );
   const ebClient = new EventBridgeClient({ region });
+  const s3 = new S3Client({ region });
 
   const store = makeDynamoMessageStore({
     client: ddbClient,
     messagesTable,
     bodyChunksTable,
+    attachmentWriter: makeS3AttachmentWriter({ client: s3 }),
+    attachmentBucket: rawBucket,
   });
   const publish = makeEventBridgePublisher({
     client: ebClient,

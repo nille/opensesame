@@ -35,6 +35,7 @@ import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { handleRawMail } from "../core/handle-raw-mail.js";
 import { makeDynamoMessageStore } from "../aws/dynamodb.js";
 import { makeEventBridgePublisher } from "../aws/eventbridge.js";
+import { makeS3AttachmentWriter } from "../aws/s3-attachment-store.js";
 
 type Args = {
   bucket: string;
@@ -124,6 +125,8 @@ async function main(): Promise<void> {
     client: ddbClient,
     messagesTable,
     bodyChunksTable,
+    attachmentWriter: makeS3AttachmentWriter({ client: s3 }),
+    attachmentBucket: args.bucket,
   });
   const publish = makeEventBridgePublisher({
     client: ebClient,

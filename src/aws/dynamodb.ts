@@ -2,8 +2,15 @@ import {
   DynamoDBDocumentClient,
   PutCommand,
 } from "@aws-sdk/lib-dynamodb";
+import {
+  type AttachmentWriter,
+  makeAttachmentS3Key,
+} from "../core/attachment-store.js";
 import { chunkBody, type Chunk } from "../core/chunking.js";
-import type { ParsedHeaders } from "../core/parser.js";
+import type {
+  AttachmentSummary,
+  ParsedHeaders,
+} from "../core/parser.js";
 import { makeSnippet } from "../core/snippet.js";
 import type {
   MessageStore,
@@ -15,14 +22,20 @@ import type {
 //   Messages           PK=address           SK=internal_id     (+ GSI1 on message_id)
 //   MessageBodyChunks  PK=internal_id       SK=chunk_seq       (zero-padded)
 //
-// Chunks are written first, then the metadata row last (ADR-0013): a reader
-// that finds the Messages row can trust the chunks exist; an interrupted
-// write leaves orphaned chunks for the reconciliation job to sweep.
+// Plus S3 for attachment bytes (slice 8.1):
+//   raw-mime bucket    attachments/{address}/{internal_id}/{part_index}
+//
+// Write ordering (ADR-0013, extended):
+//   1. attachment bytes to S3 (so an indexable row never points at missing files)
+//   2. body chunks to DDB     (so a Messages row never points at missing chunks)
+//   3. Messages metadata row  (last — safe to find for any reader)
 
 export type DynamoMessageStoreDeps = {
   client: DynamoDBDocumentClient;
   messagesTable: string;
   bodyChunksTable: string;
+  attachmentWriter: AttachmentWriter;
+  attachmentBucket: string;
 };
 
 export function makeDynamoMessageStore(
@@ -38,8 +51,21 @@ async function writeMessage(
   deps: DynamoMessageStoreDeps,
   row: StoredMessage,
 ): Promise<void> {
-  const chunks = chunkBody(row.parsed.bodyText);
+  // 1. Attachment bytes to S3 first. A failed put here aborts the whole
+  //    write so we never end up with a Messages row pointing at a missing
+  //    object; idempotent re-runs overwrite the same key byte-for-byte.
+  for (const att of row.parsed.attachments) {
+    await deps.attachmentWriter.putAttachment({
+      bucket: deps.attachmentBucket,
+      key: makeAttachmentS3Key(row.address, row.internal_id, att.partIndex),
+      bytes: att.bytes,
+      contentType: att.contentType,
+      filename: att.filename,
+    });
+  }
 
+  // 2. Body chunks (ADR-0013).
+  const chunks = chunkBody(row.parsed.bodyText);
   for (const chunk of chunks) {
     await deps.client.send(
       new PutCommand({
@@ -49,6 +75,7 @@ async function writeMessage(
     );
   }
 
+  // 3. Metadata row last.
   await deps.client.send(
     new PutCommand({
       TableName: deps.messagesTable,
@@ -104,7 +131,22 @@ function messageItem(row: StoredMessage): Record<string, unknown> {
   copyHeaderIfPresent(item, "cc_raw", h.cc);
   copyHeaderIfPresent(item, "date_raw", h.date);
   if (h.customHeadersTruncated) item.custom_headers_truncated = true;
+  // Attachments — attribute-absent on rows that have none (back-compat).
+  if (row.parsed.attachments.length > 0) {
+    item.attachments = row.parsed.attachments.map(projectAttachment);
+  }
   return item;
+}
+
+function projectAttachment(att: AttachmentSummary): Record<string, unknown> {
+  return {
+    filename: att.filename,
+    content_type: att.contentType,
+    size_bytes: att.sizeBytes,
+    content_id: att.contentId,
+    part_index: att.partIndex,
+    sha256: att.sha256,
+  };
 }
 
 function skeletonItem(row: SkeletonRow): Record<string, unknown> {

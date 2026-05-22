@@ -1,0 +1,93 @@
+/*
+ * Open Sesame webmail design tokens.
+ *
+ * Two themes — day (warm paper, ink-blue accent) and night (cool ink, amber
+ * accent). Same bones, two felt rooms. Accent hue shifts on purpose; not a
+ * filter inversion.
+ *
+ * All colors are OKLCH. Neutrals carry chroma 0.003–0.012 toward the theme
+ * hue; never #000 / #fff.
+ */
+
+:root {
+  /* DAY (default) */
+  --paper:        oklch(98%   0.003   80);
+  --paper-2:      oklch(96%   0.004   80);  /* rail / tinted surface */
+  --paper-3:      oklch(94%   0.006   80);  /* selection bg, hover wash */
+  --ink:          oklch(20%   0.012   80);
+  --ink-muted:    oklch(48%   0.012   80);
+  --ink-faint:    oklch(72%   0.008   80);
+  --rule:         oklch(90%   0.005   80);
+  --rule-strong:  oklch(82%   0.006   80);
+  --accent:       oklch(48%   0.13   250);
+  --accent-soft:  oklch(94%   0.04   250);  /* selection background */
+  --danger:       oklch(50%   0.16    30);
+  --danger-soft:  oklch(94%   0.04    30);
+  --success:      oklch(52%   0.13   150);
+
+  /* TYPE */
+  --font-sans: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --t-mono-xs: 11px;
+  --t-mono-sm: 12px;
+  --t-sm:      13px;
+  --t-base:    14px;
+  --t-lg:      17px;
+  --t-xl:      22px;
+
+  --lh-tight:  1.2;
+  --lh-snug:   1.35;
+  --lh-base:   1.5;
+  --lh-prose:  1.6;
+
+  /* RHYTHM (4px baseline) */
+  --r-1: 4px;
+  --r-2: 8px;
+  --r-3: 12px;
+  --r-4: 16px;
+  --r-5: 20px;
+  --r-6: 24px;
+  --r-8: 32px;
+  --r-10: 40px;
+  --r-12: 48px;
+  --r-16: 64px;
+
+  /* GEOMETRY */
+  --rail-w: 220px;
+  --inbox-w: 380px;     /* ~ 52ch on a 14px base */
+  --reader-max: 68ch;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+
+  /* MOTION */
+  --d-fast:   120ms;
+  --d-normal: 200ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);   /* ease-out-quart */
+}
+
+/* NIGHT — soft charcoal with cool tint, not pitch black. The paper sits
+   at 24% so the eye lands somewhere comfortable; the rail recedes one
+   step (20%) and selection lifts (30%). */
+:root[data-theme="night"] {
+  --paper:        oklch(24%   0.006  250);
+  --paper-2:      oklch(20%   0.007  250);
+  --paper-3:      oklch(30%   0.009  250);
+  --ink:          oklch(94%   0.010  250);
+  --ink-muted:    oklch(70%   0.010  250);
+  --ink-faint:    oklch(52%   0.010  250);
+  --rule:         oklch(34%   0.008  250);
+  --rule-strong:  oklch(42%   0.010  250);
+  --accent:       oklch(76%   0.14    68);   /* amber */
+  --accent-soft:  oklch(36%   0.07    68);
+  --danger:       oklch(74%   0.16    30);
+  --danger-soft:  oklch(34%   0.06    30);
+  --success:      oklch(74%   0.13   150);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --d-fast: 0ms;
+    --d-normal: 0ms;
+  }
+}

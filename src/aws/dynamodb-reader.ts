@@ -2,7 +2,9 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   QueryCommand,
+  UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
+import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { makeInternalIdLowerBound } from "../core/internal-id.js";
 import { assembleBody, type StoredChunk } from "../core/reader.js";
 import type {
@@ -11,11 +13,13 @@ import type {
   InboxRowOk,
   ListInboxInput,
   ListInboxResult,
+  MarkReadResult,
   MessageDirection,
   MessageReader,
   ReadMessage,
   ReadMessageFailed,
   ReadMessageOk,
+  StoredAttachment,
   StoredMessageHeaders,
 } from "../core/store.js";
 
@@ -42,6 +46,9 @@ export function makeDynamoMessageReader(
     getByPrimaryKey: (address, internalId) =>
       getByPrimaryKey(deps, address, internalId),
     listInbox: (input) => listInbox(deps, input),
+    markRead: (messageId, now) => markRead(deps, messageId, now),
+    markReadByPrimaryKey: (address, internalId, now) =>
+      markReadByPrimaryKey(deps, address, internalId, now),
   };
 }
 
@@ -152,7 +159,31 @@ function projectOk(
         : "",
     body_text: bodyText,
     direction: readDirection(row),
+    attachments: readAttachments(row),
+    read_at: nullableString(row["read_at"]),
   };
+}
+
+// Project the DDB attachments list back to the wire shape. Attribute-absent
+// (rows written before slice 8.1) collapses to an empty array — readers
+// never see `undefined` here.
+function readAttachments(row: Record<string, unknown>): StoredAttachment[] {
+  const raw = row["attachments"];
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry) => {
+    const e = entry as Record<string, unknown>;
+    return {
+      filename: typeof e["filename"] === "string" ? e["filename"] : null,
+      content_type:
+        typeof e["content_type"] === "string"
+          ? e["content_type"]
+          : "application/octet-stream",
+      size_bytes: typeof e["size_bytes"] === "number" ? e["size_bytes"] : 0,
+      content_id: typeof e["content_id"] === "string" ? e["content_id"] : null,
+      part_index: typeof e["part_index"] === "number" ? e["part_index"] : 0,
+      sha256: typeof e["sha256"] === "string" ? e["sha256"] : "",
+    };
+  });
 }
 
 // ADR-0017: rows written before slice 3 have no `direction` attribute;
@@ -253,8 +284,105 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     list_id: nullableString(row["list_id"]),
     snippet: typeof row["snippet"] === "string" ? (row["snippet"] as string) : "",
     direction: readDirection(row),
+    read_at: nullableString(row["read_at"]),
   };
   return ok;
+}
+
+async function markRead(
+  deps: DynamoMessageReaderDeps,
+  messageId: string,
+  now: Date,
+): Promise<MarkReadResult> {
+  // GSI1 hop to resolve the primary key. Project only what we need so the
+  // lookup costs one RCU. attribute_not_exists guards the write so the
+  // first-open timestamp wins; subsequent opens are a no-op without a write.
+  const gsi = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.messagesTable,
+      IndexName: deps.messageIdGsiName,
+      KeyConditionExpression: "message_id = :mid",
+      ExpressionAttributeValues: { ":mid": messageId },
+      ProjectionExpression: "address, internal_id, read_at",
+      Limit: 1,
+    }),
+  );
+  const hit = gsi.Items?.[0];
+  if (!hit) return { kind: "not_found" };
+
+  return stampReadAt(
+    deps,
+    String(hit["address"]),
+    String(hit["internal_id"]),
+    now,
+    nullableString(hit["read_at"]),
+  );
+}
+
+async function markReadByPrimaryKey(
+  deps: DynamoMessageReaderDeps,
+  address: string,
+  internalId: string,
+  now: Date,
+): Promise<MarkReadResult> {
+  // No GSI hop needed — the caller already has the primary key. Skip the
+  // pre-check Get; let the conditional UpdateItem be the existence probe,
+  // and only Get on the already-read fallback path.
+  return stampReadAt(deps, address, internalId, now, null);
+}
+
+// Shared write path. Returns "not_found" when the row doesn't exist on the
+// already-read fallback Get. The address-existence guard in the condition
+// prevents UpdateItem from creating a phantom row when the caller's primary
+// key is stale.
+async function stampReadAt(
+  deps: DynamoMessageReaderDeps,
+  address: string,
+  internalId: string,
+  now: Date,
+  projectedReadAt: string | null,
+): Promise<MarkReadResult> {
+  const isoNow = now.toISOString();
+  try {
+    await deps.client.send(
+      new UpdateCommand({
+        TableName: deps.messagesTable,
+        Key: { address, internal_id: internalId },
+        UpdateExpression: "SET read_at = :now",
+        // address-existence guard: UpdateItem on a missing key would otherwise
+        // create a phantom row with just `read_at`. Pair with the
+        // attribute_not_exists(read_at) idempotence guard.
+        ConditionExpression:
+          "attribute_exists(#addr) AND attribute_not_exists(read_at)",
+        ExpressionAttributeNames: { "#addr": "address" },
+        ExpressionAttributeValues: { ":now": isoNow },
+      }),
+    );
+    return { kind: "marked", read_at: isoNow };
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException) {
+      // One of: row missing, or read_at already set. Resolve which.
+      if (projectedReadAt !== null) {
+        return { kind: "already_read", read_at: projectedReadAt };
+      }
+      const out = await deps.client.send(
+        new GetCommand({
+          TableName: deps.messagesTable,
+          Key: { address, internal_id: internalId },
+          ProjectionExpression: "read_at",
+        }),
+      );
+      if (!out.Item) return { kind: "not_found" };
+      const stamped = nullableString(out.Item["read_at"]);
+      if (stamped !== null) {
+        return { kind: "already_read", read_at: stamped };
+      }
+      // Condition failed but row exists with no read_at — treat as a benign
+      // race and report the requested timestamp rather than a 5xx.
+      return { kind: "marked", read_at: isoNow };
+    }
+    throw err;
+  }
 }
 
 function encodeCursor(lek: Record<string, unknown>): string {

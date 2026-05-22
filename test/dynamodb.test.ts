@@ -5,6 +5,7 @@ import {
   TransactWriteCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { makeDynamoMessageStore } from "../src/aws/dynamodb.js";
+import type { AttachmentWriter } from "../src/core/attachment-store.js";
 import type { ParsedMessage } from "../src/core/parser.js";
 import type { SkeletonRow, StoredMessage } from "../src/core/store.js";
 
@@ -27,6 +28,20 @@ const TABLES = {
   messagesTable: "Messages-test",
   bodyChunksTable: "MessageBodyChunks-test",
 } as const;
+
+const ATTACHMENT_BUCKET = "raw-mime-test";
+
+function makeStubAttachmentWriter(): AttachmentWriter & {
+  calls: Array<Parameters<AttachmentWriter["putAttachment"]>[0]>;
+} {
+  const calls: Array<Parameters<AttachmentWriter["putAttachment"]>[0]> = [];
+  return {
+    calls,
+    putAttachment: async (input) => {
+      calls.push(input);
+    },
+  };
+}
 
 const PARSED: ParsedMessage = {
   headers: {
@@ -65,7 +80,12 @@ function makeStoredMessage(overrides: Partial<StoredMessage> = {}): StoredMessag
 describe("DynamoMessageStore.writeMessage", () => {
   it("writes Messages row keyed by PK=address, SK=internal_id (ADR-0013)", async () => {
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await store.writeMessage(makeStoredMessage());
 
@@ -90,7 +110,12 @@ describe("DynamoMessageStore.writeMessage", () => {
 
   it("writes body chunks under PK=internal_id with zero-padded chunk_seq", async () => {
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     // Force multiple chunks by passing a body larger than chunkSize. We do
     // this via a parsed message with a long bodyText — the adapter calls
@@ -131,7 +156,12 @@ describe("DynamoMessageStore.writeMessage", () => {
     // ADR-0013: "writes chunks first, then the metadata row last." A reader
     // that finds a Messages row can trust the chunks exist.
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await store.writeMessage(makeStoredMessage());
 
@@ -159,7 +189,12 @@ describe("DynamoMessageStore.writeMessage", () => {
     // before slice 3 stays byte-identical on rewrite. The reader projects
     // attribute-absent as direction='in'.
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await store.writeMessage(makeStoredMessage());
 
@@ -174,7 +209,12 @@ describe("DynamoMessageStore.writeMessage", () => {
 
   it("emits direction='out' on the wire when a StoredMessage carries it", async () => {
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await store.writeMessage(makeStoredMessage({ direction: "out" }));
 
@@ -189,7 +229,12 @@ describe("DynamoMessageStore.writeMessage", () => {
 
   it("emits no chunk row when bodyText is empty (chunkBody returns [])", async () => {
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await store.writeMessage(
       makeStoredMessage({ parsed: { ...PARSED, bodyText: "" } }),
@@ -216,9 +261,201 @@ describe("DynamoMessageStore.writeMessage", () => {
         throw boom;
       }),
     };
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     await expect(store.writeMessage(makeStoredMessage())).rejects.toBe(boom);
+  });
+
+  it("writes attachment bytes to S3 and persists summaries on the metadata row", async () => {
+    const client = makeStubClient();
+    const writer = makeStubAttachmentWriter();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    const bytesA = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const bytesB = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    const parsed: ParsedMessage = {
+      ...PARSED,
+      attachments: [
+        {
+          filename: "x.png",
+          contentType: "image/png",
+          sizeBytes: bytesA.length,
+          contentId: null,
+          partIndex: 0,
+          bytes: bytesA,
+          sha256: "aaaa",
+        },
+        {
+          filename: null,
+          contentType: "application/octet-stream",
+          sizeBytes: bytesB.length,
+          contentId: "<cid-1>",
+          partIndex: 1,
+          bytes: bytesB,
+          sha256: "bbbb",
+        },
+      ],
+    };
+
+    await store.writeMessage(makeStoredMessage({ parsed }));
+
+    // Both attachment objects must land under attachments/{address}/{id}/{idx}
+    expect(writer.calls).toHaveLength(2);
+    expect(writer.calls[0]!.bucket).toBe(ATTACHMENT_BUCKET);
+    expect(writer.calls[0]!.key).toBe(
+      "attachments/alice@acme.com/01HF7E0000000000000000DYNAMO/0",
+    );
+    expect(writer.calls[0]!.bytes).toBe(bytesA);
+    expect(writer.calls[0]!.contentType).toBe("image/png");
+    expect(writer.calls[1]!.key).toBe(
+      "attachments/alice@acme.com/01HF7E0000000000000000DYNAMO/1",
+    );
+
+    // Metadata row carries the projected summary list (no bytes field).
+    const puts = commandsByType(client, PutCommand);
+    const meta = puts.find(
+      (p) => (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    )!;
+    const item = (meta.input as { Item: Record<string, unknown> }).Item;
+    expect(item.attachments).toEqual([
+      {
+        filename: "x.png",
+        content_type: "image/png",
+        size_bytes: bytesA.length,
+        content_id: null,
+        part_index: 0,
+        sha256: "aaaa",
+      },
+      {
+        filename: null,
+        content_type: "application/octet-stream",
+        size_bytes: bytesB.length,
+        content_id: "<cid-1>",
+        part_index: 1,
+        sha256: "bbbb",
+      },
+    ]);
+  });
+
+  it("writes attachments before the metadata row (no orphan rows)", async () => {
+    const client = makeStubClient();
+    const writer = makeStubAttachmentWriter();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    const bytes = new Uint8Array([1, 2, 3]);
+    const parsed: ParsedMessage = {
+      ...PARSED,
+      attachments: [
+        {
+          filename: "f.bin",
+          contentType: "application/octet-stream",
+          sizeBytes: 3,
+          contentId: null,
+          partIndex: 0,
+          bytes,
+          sha256: "0102",
+        },
+      ],
+    };
+
+    // Spy on order via a single timeline: writer call lands before the
+    // Messages PutCommand. Same invariant the chunks-first ordering test
+    // checks, extended to cover attachments.
+    const order: string[] = [];
+    writer.putAttachment = async () => {
+      order.push("s3-attachment");
+    };
+    client.send.mockImplementation(async (cmd: unknown) => {
+      if (
+        cmd instanceof PutCommand &&
+        (cmd.input as { TableName?: string }).TableName === TABLES.messagesTable
+      ) {
+        order.push("ddb-meta");
+      }
+      return {};
+    });
+
+    await store.writeMessage(makeStoredMessage({ parsed }));
+
+    expect(order).toEqual(["s3-attachment", "ddb-meta"]);
+  });
+
+  it("omits the `attachments` attribute on the metadata row when there are none", async () => {
+    const client = makeStubClient();
+    const writer = makeStubAttachmentWriter();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    await store.writeMessage(makeStoredMessage()); // PARSED has [] attachments
+
+    expect(writer.calls).toHaveLength(0);
+    const puts = commandsByType(client, PutCommand);
+    const meta = puts.find(
+      (p) => (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    )!;
+    const item = (meta.input as { Item: Record<string, unknown> }).Item;
+    // Attribute-absent on the row is the marker for "no attachments" — keeps
+    // back-compat with everything written before this slice.
+    expect(item.attachments).toBeUndefined();
+  });
+
+  it("does not write the metadata row when an attachment S3 put fails", async () => {
+    const client = makeStubClient();
+    const writer: AttachmentWriter = {
+      putAttachment: async () => {
+        throw new Error("S3 put failed");
+      },
+    };
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    const parsed: ParsedMessage = {
+      ...PARSED,
+      attachments: [
+        {
+          filename: "f.bin",
+          contentType: "application/octet-stream",
+          sizeBytes: 3,
+          contentId: null,
+          partIndex: 0,
+          bytes: new Uint8Array([1, 2, 3]),
+          sha256: "0102",
+        },
+      ],
+    };
+
+    await expect(
+      store.writeMessage(makeStoredMessage({ parsed })),
+    ).rejects.toThrow(/S3 put failed/);
+
+    const puts = commandsByType(client, PutCommand);
+    const metaPuts = puts.filter(
+      (p) => (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    );
+    expect(metaPuts).toHaveLength(0);
   });
 
   it("does not write the metadata row when a chunk write fails", async () => {
@@ -237,7 +474,12 @@ describe("DynamoMessageStore.writeMessage", () => {
         return {};
       }),
     };
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     const long = "a".repeat(700_000);
     await expect(
@@ -258,7 +500,12 @@ describe("DynamoMessageStore.writeMessage", () => {
 describe("DynamoMessageStore.writeSkeleton", () => {
   it("writes a single Messages row with parse_status=failed and no body chunks (ADR-0012/0013)", async () => {
     const client = makeStubClient();
-    const store = makeDynamoMessageStore({ client: client as never, ...TABLES });
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
 
     const row: SkeletonRow = {
       parse_status: "failed",
