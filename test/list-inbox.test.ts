@@ -44,6 +44,68 @@ function row(over: Record<string, unknown> = {}): Record<string, unknown> {
   };
 }
 
+describe("DynamoMessageReader.listInbox thread_id projection (ADR-0026)", () => {
+  it("projects thread_id to the inbox row when the attribute is present", async () => {
+    const client = makeStubClient(async () => ({
+      Items: [row({ thread_id: "<root@example.com>" })],
+      Count: 1,
+    }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.listInbox({
+      address: "alice@acme.com",
+      limit: 25,
+    });
+    const m = result.messages[0]!;
+    if (m.parse_status !== "ok") throw new Error("expected ok row");
+    expect(m.thread_id).toBe("<root@example.com>");
+  });
+
+  it("collapses attribute-absent thread_id to null on read (legacy / sparse rows)", async () => {
+    // Rows written before slice 8.8 have no thread_id attribute. The reader
+    // must surface them as null so the client knows to fall through to JWZ.
+    const client = makeStubClient(async () => ({
+      Items: [row()],
+      Count: 1,
+    }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.listInbox({
+      address: "alice@acme.com",
+      limit: 25,
+    });
+    const m = result.messages[0]!;
+    if (m.parse_status !== "ok") throw new Error("expected ok row");
+    expect(m.thread_id).toBeNull();
+  });
+});
+
+describe("DynamoMessageReader.listInbox reply_to projection (ADR-0022)", () => {
+  it("projects reply_to_raw to inbox row reply_to field when present", async () => {
+    const client = makeStubClient(async () => ({
+      Items: [row({ reply_to_raw: "list-replies@example.com" })],
+      Count: 1,
+    }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const result = await reader.listInbox({
+      address: "alice@acme.com",
+      limit: 25,
+    });
+    const m = result.messages[0]!;
+    if (m.parse_status !== "ok") throw new Error("expected ok row");
+    expect(m.reply_to).toBe("list-replies@example.com");
+  });
+});
+
 describe("DynamoMessageReader.listInbox", () => {
   it("queries Messages by PK=address, newest first, with the requested limit", async () => {
     const client = makeStubClient(async (cmd) => {
@@ -98,6 +160,8 @@ describe("DynamoMessageReader.listInbox", () => {
     expect(m.received_at).toBe("2026-05-19T14:23:10.901Z");
     expect(m.snippet).toBe("Re: Q2 invoice — first 200 chars of body…");
     expect(m.message_id).toBe("<msg-1@example.com>");
+    // ADR-0022 tail-add: rows without reply_to_raw collapse to null on read.
+    expect(m.reply_to).toBeNull();
     // No body chunks query was issued (the assertion is implicit: the stub
     // would have thrown — but we check explicitly to keep the contract loud).
     const queries = client.send.mock.calls

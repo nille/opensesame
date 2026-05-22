@@ -130,6 +130,7 @@ describe("DynamoMessageReader.getByMessageId", () => {
       from: "Sender <sender@example.com>",
       to: "alice@acme.com",
       cc: null,
+      reply_to: null,
       subject: "Re: Q2 invoice",
       date: "Tue, 19 May 2026 14:23:10 +0000",
       message_id: "<msg-1@example.com>",
@@ -223,6 +224,99 @@ describe("DynamoMessageReader.getByMessageId", () => {
     }
     expect(result.parse_error).toBe(skeletonRow.parse_error);
     expect(result.raw_s3_uri).toBe(skeletonRow.raw_s3_uri);
+  });
+
+  it("projects reply_to_raw to headers.reply_to and defaults absent attribute to null (ADR-0022)", async () => {
+    const rowWithReplyTo = {
+      ...FOUND_MESSAGE_ROW,
+      reply_to_raw: "list-replies@example.com",
+    };
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof QueryCommand) {
+        if (cmd.input.TableName === TABLES.messagesTable) {
+          return { Items: [rowWithReplyTo], Count: 1 };
+        }
+        return { Items: [], Count: 0 };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.getByMessageId("<msg-1@example.com>");
+    if (result === null || result.parse_status !== "ok") {
+      throw new Error("expected parse_status=ok");
+    }
+    expect(result.headers.reply_to).toBe("list-replies@example.com");
+
+    // Tail-add back-compat: absent attribute collapses to null.
+    const clientNoAttr = makeStubClient(async (cmd) => {
+      if (cmd instanceof QueryCommand) {
+        if (cmd.input.TableName === TABLES.messagesTable) {
+          return { Items: [FOUND_MESSAGE_ROW], Count: 1 };
+        }
+        return { Items: [], Count: 0 };
+      }
+      throw new Error("unexpected");
+    });
+    const reader2 = makeDynamoMessageReader({
+      client: clientNoAttr as never,
+      ...TABLES,
+    });
+    const result2 = await reader2.getByMessageId("<msg-1@example.com>");
+    if (result2 === null || result2.parse_status !== "ok") {
+      throw new Error("expected parse_status=ok");
+    }
+    expect(result2.headers.reply_to).toBeNull();
+  });
+
+  it("projects thread_id into ReadMessageOk when present and null otherwise (ADR-0026)", async () => {
+    const rowWithThreadId = {
+      ...FOUND_MESSAGE_ROW,
+      thread_id: "<root@example.com>",
+    };
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof QueryCommand) {
+        if (cmd.input.TableName === TABLES.messagesTable) {
+          return { Items: [rowWithThreadId], Count: 1 };
+        }
+        return { Items: [], Count: 0 };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.getByMessageId("<msg-1@example.com>");
+    if (result === null || result.parse_status !== "ok") {
+      throw new Error("expected parse_status=ok");
+    }
+    expect(result.thread_id).toBe("<root@example.com>");
+
+    // Tail-add back-compat: rows written before slice 8.8 lack the attribute
+    // and project to null so the client knows to fall back to JWZ.
+    const clientNoAttr = makeStubClient(async (cmd) => {
+      if (cmd instanceof QueryCommand) {
+        if (cmd.input.TableName === TABLES.messagesTable) {
+          return { Items: [FOUND_MESSAGE_ROW], Count: 1 };
+        }
+        return { Items: [], Count: 0 };
+      }
+      throw new Error("unexpected");
+    });
+    const reader2 = makeDynamoMessageReader({
+      client: clientNoAttr as never,
+      ...TABLES,
+    });
+    const result2 = await reader2.getByMessageId("<msg-1@example.com>");
+    if (result2 === null || result2.parse_status !== "ok") {
+      throw new Error("expected parse_status=ok");
+    }
+    expect(result2.thread_id).toBeNull();
   });
 
   it("returns null on getByPrimaryKey when the row is missing (delete + race)", async () => {

@@ -48,6 +48,7 @@ const PARSED: ParsedMessage = {
     from: "Sender <sender@example.com>",
     to: "alice@acme.com",
     cc: null,
+    replyTo: null,
     subject: "Re: Q2 invoice",
     date: "Tue, 19 May 2026 14:23:10 +0000",
     messageId: "<msg-1@example.com>",
@@ -416,6 +417,99 @@ describe("DynamoMessageStore.writeMessage", () => {
     // Attribute-absent on the row is the marker for "no attachments" — keeps
     // back-compat with everything written before this slice.
     expect(item.attachments).toBeUndefined();
+  });
+
+  it("persists reply_to under reply_to_raw when the parser captured one (ADR-0022)", async () => {
+    const client = makeStubClient();
+    const writer = makeStubAttachmentWriter();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    const parsedWithReplyTo: ParsedMessage = {
+      ...PARSED,
+      headers: { ...PARSED.headers, replyTo: "list-replies@example.com" },
+    };
+    await store.writeMessage(makeStoredMessage({ parsed: parsedWithReplyTo }));
+
+    const puts = commandsByType(client, PutCommand);
+    const meta = puts.find(
+      (p) => (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    )!;
+    const item = (meta.input as { Item: Record<string, unknown> }).Item;
+    expect(item["reply_to_raw"]).toBe("list-replies@example.com");
+  });
+
+  it("writes thread_id onto the metadata row when StoredMessage carries one (ADR-0026)", async () => {
+    const client = makeStubClient();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    await store.writeMessage(
+      makeStoredMessage({ thread_id: "<root@example.com>" }),
+    );
+
+    const puts = commandsByType(client, PutCommand);
+    const meta = puts.find(
+      (p) =>
+        (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    )!;
+    const item = (meta.input as { Item: Record<string, unknown> }).Item;
+    expect(item.thread_id).toBe("<root@example.com>");
+  });
+
+  it("omits thread_id when StoredMessage.thread_id is null/absent (ADR-0026 sparse)", async () => {
+    const client = makeStubClient();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: makeStubAttachmentWriter(),
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    // Absent on the input row.
+    await store.writeMessage(makeStoredMessage());
+    // Explicit null (parse too sparse for deriveThreadId).
+    await store.writeMessage(makeStoredMessage({ thread_id: null }));
+    // Empty string defensively collapses to attribute-absent too.
+    await store.writeMessage(makeStoredMessage({ thread_id: "" }));
+
+    const metaPuts = commandsByType(client, PutCommand).filter(
+      (p) =>
+        (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    );
+    expect(metaPuts).toHaveLength(3);
+    for (const m of metaPuts) {
+      const item = (m.input as { Item: Record<string, unknown> }).Item;
+      expect(item.thread_id).toBeUndefined();
+    }
+  });
+
+  it("omits reply_to_raw on rows where the parsed Reply-To is null (back-compat)", async () => {
+    const client = makeStubClient();
+    const writer = makeStubAttachmentWriter();
+    const store = makeDynamoMessageStore({
+      client: client as never,
+      ...TABLES,
+      attachmentWriter: writer,
+      attachmentBucket: ATTACHMENT_BUCKET,
+    });
+
+    await store.writeMessage(makeStoredMessage()); // PARSED.headers.replyTo === null
+
+    const puts = commandsByType(client, PutCommand);
+    const meta = puts.find(
+      (p) => (p.input as { TableName?: string }).TableName === TABLES.messagesTable,
+    )!;
+    const item = (meta.input as { Item: Record<string, unknown> }).Item;
+    expect(item["reply_to_raw"]).toBeUndefined();
   });
 
   it("does not write the metadata row when an attachment S3 put fails", async () => {

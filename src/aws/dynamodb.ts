@@ -122,6 +122,12 @@ function messageItem(row: StoredMessage): Record<string, unknown> {
   // ADR-0017: only emit `direction` when explicitly set. Inbound writers
   // omit it; readers default attribute-absent to "in" for back-compat.
   if (row.direction !== undefined) item.direction = row.direction;
+  // ADR-0026 (slice 8.8): server-stamped thread root. Sparse — null/absent
+  // collapses to attribute-absent on the row, same back-compat treatment as
+  // direction/read_at/reply_to_raw. Empty string never makes it onto the row.
+  if (typeof row.thread_id === "string" && row.thread_id !== "") {
+    item.thread_id = row.thread_id;
+  }
   // GSI1 keys per ADR-0013. Only attached when the inbound RFC header was
   // present — a missing message_id keeps the row off GSI1, which matches the
   // skeleton-row treatment (sparse GSI).
@@ -129,6 +135,7 @@ function messageItem(row: StoredMessage): Record<string, unknown> {
   copyHeaderIfPresent(item, "from_raw", h.from);
   copyHeaderIfPresent(item, "to_raw", h.to);
   copyHeaderIfPresent(item, "cc_raw", h.cc);
+  copyHeaderIfPresent(item, "reply_to_raw", h.replyTo);
   copyHeaderIfPresent(item, "date_raw", h.date);
   if (h.customHeadersTruncated) item.custom_headers_truncated = true;
   // Attachments — attribute-absent on rows that have none (back-compat).

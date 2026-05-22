@@ -67,6 +67,8 @@ export async function ingestRawMail(
 
   // Durability ordering (ADR-0012): the row must be in DynamoDB before the
   // event fires, so any consumer reacting to the event can find the message.
+  // ADR-0026: pass thread_id through from the same event we'll publish, so
+  // the stored row carries the same root the wire event advertises.
   await deps.store.writeMessage({
     parse_status: "ok",
     internal_id: input.internalId,
@@ -75,6 +77,7 @@ export async function ingestRawMail(
     raw_s3_uri: input.rawS3Uri,
     schema_v: "1",
     parsed,
+    thread_id: event.data.thread_id,
   });
 
   await deps.publish(event);

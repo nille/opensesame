@@ -38,6 +38,11 @@ export type StoredMessage = StoredMessageBase & {
   // so GSI1 indexes the recipient-visible (SES-rewritten) RFC Message-ID, not
   // the composer's attempted id (ADR-0015 + ADR-0017). This is enforced by
   // the persist-outbound orchestrator before calling writeMessage.
+  // ADR-0026 (slice 8.8): server-derived thread_id, computed from the same
+  // RFC 5322 threading headers `deriveThreadId` already feeds into the
+  // MailIngested event. null when the headers are too sparse — the row simply
+  // omits the attribute and the client's JWZ fallback handles it.
+  thread_id?: string | null;
 };
 
 export type SkeletonRow = StoredMessageBase & {
@@ -69,6 +74,9 @@ export type StoredMessageHeaders = {
   from: string | null;
   to: string | null;
   cc: string | null;
+  // ADR-0022 (slice 8.4): tail-add. Rows written before 8.4 collapse to null
+  // on read; reply_to_email's reply_target falls back to `from` in that case.
+  reply_to: string | null;
   subject: string | null;
   date: string | null;
   message_id: string | null;
@@ -112,6 +120,10 @@ export type ReadMessageOk = {
   // null so older messages projected through the reader are unread by default
   // until the slice 8.2 backfill stamps `read_at = received_at` on them.
   read_at: string | null;
+  // ADR-0026 (slice 8.8): server-stamped thread root. null on rows written
+  // before slice 8.8 (no backfill) and on parses too sparse for
+  // deriveThreadId. The web client's JWZ fallback handles null.
+  thread_id: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -139,6 +151,8 @@ export type InboxRowOk = {
   from: string | null;
   to: string | null;
   cc: string | null;
+  // ADR-0022 (slice 8.4): tail-add. Inbox rows before 8.4 are null here.
+  reply_to: string | null;
   subject: string | null;
   date: string | null;
   in_reply_to: string | null;
@@ -151,6 +165,9 @@ export type InboxRowOk = {
   // null when the row has never been opened (or was written before slice 8.2);
   // ISO-8601 timestamp once an operator client called mark_read.
   read_at: string | null;
+  // ADR-0026 (slice 8.8): server-stamped thread root, null when the row
+  // predates this slice or the parse was too sparse for deriveThreadId.
+  thread_id: string | null;
 };
 
 export type InboxRowFailed = {

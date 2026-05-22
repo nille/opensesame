@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { dispatch, type BffDeps } from "../src/bff/dispatcher.js";
+import {
+  dispatch,
+  type BffDeps,
+  type SendEmailResult,
+} from "../src/bff/dispatcher.js";
+import type { SendEmailInput } from "../src/bff/schemas.js";
 
 // Dispatcher is framework-agnostic per ADR-0021: it takes a parsed
 // {path, body} and returns {status, body}. The Hono adapter wraps it
@@ -115,6 +120,7 @@ describe("dispatch", () => {
         from: "sender@example.com",
         to: "alice@example.com",
         cc: null,
+        reply_to: null,
         subject: "Hello",
         date: "Thu, 21 May 2026 12:00:00 +0000",
         message_id: "<msg-1@example.com>",
@@ -128,6 +134,7 @@ describe("dispatch", () => {
       direction: "in" as const,
       attachments: [],
       read_at: null,
+      thread_id: null,
     };
     const deps = makeDeps({
       reader: {
@@ -271,6 +278,7 @@ describe("dispatch", () => {
         from: "sender@example.com",
         to: "alice@example.com",
         cc: null,
+        reply_to: null,
         subject: "Hello",
         date: null,
         message_id: "<msg-1@example.com>",
@@ -293,6 +301,7 @@ describe("dispatch", () => {
         },
       ],
       read_at: null,
+      thread_id: null,
     };
     const presign = vi.fn();
     const deps: BffDeps = {
@@ -360,6 +369,7 @@ describe("dispatch", () => {
         from: "s@example.com",
         to: "alice@example.com",
         cc: null,
+        reply_to: null,
         subject: "Hi",
         date: null,
         message_id: "<msg-1@example.com>",
@@ -390,6 +400,7 @@ describe("dispatch", () => {
         },
       ],
       read_at: null,
+      thread_id: null,
     };
     const presign = vi.fn(async () => ({
       url: "https://s3.example.com/signed-url",
@@ -639,5 +650,215 @@ describe("dispatch", () => {
       subject: null,
     });
     expect(r.body).toEqual({ messages: [], next_cursor: null });
+  });
+
+  // ----- reply_to_email (ADR-0022) -----
+
+  function makeParentOk(over: Record<string, unknown> = {}) {
+    return {
+      parse_status: "ok" as const,
+      schema_v: "1" as const,
+      address: "alice@acme.com",
+      internal_id: "01HF7E0000000000000000PARENT",
+      received_at: "2026-05-19T14:23:10.901Z",
+      raw_s3_uri: "s3://bucket/k",
+      headers: {
+        from: "Sender <sender@example.com>",
+        to: "alice@acme.com",
+        cc: null,
+        reply_to: null,
+        subject: "Q2 invoice",
+        date: "Tue, 19 May 2026 14:23:10 +0000",
+        message_id: "<orig-1@example.com>",
+        in_reply_to: null,
+        references: null,
+        auto_submitted: "no",
+        list_id: null,
+      },
+      headers_blob: "",
+      body_text: "hi alice",
+      direction: "in" as const,
+      attachments: [],
+      read_at: null,
+      thread_id: null,
+      ...over,
+    };
+  }
+
+  it("reply_to_email: 400 when message_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/reply_to_email", {
+      body_text: "hi",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "message_id",
+    });
+  });
+
+  it("reply_to_email: 400 when body_text is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/reply_to_email", {
+      message_id: "<orig-1@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "body_text",
+    });
+  });
+
+  it("reply_to_email: 404 parent_not_found when reader returns null", async () => {
+    const getByMessageId = vi.fn(async () => null);
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId,
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/reply_to_email", {
+      message_id: "<missing@example.com>",
+      body_text: "hi",
+    });
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({ code: "parent_not_found" });
+  });
+
+  it("reply_to_email: 422 parent_unrepliable when parent is a skeleton row", async () => {
+    const skeleton = {
+      parse_status: "failed" as const,
+      schema_v: "1" as const,
+      address: "alice@acme.com",
+      internal_id: "01HF7E0000000000000000FAILED",
+      received_at: "2026-05-19T14:23:10.901Z",
+      raw_s3_uri: "s3://bucket/k",
+      parse_error: "multipart missing boundary",
+    };
+    const getByMessageId = vi.fn(async () => skeleton);
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId,
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/reply_to_email", {
+      message_id: "<broken@example.com>",
+      body_text: "hi",
+    });
+    expect(r.status).toBe(422);
+    expect(r.body).toMatchObject({
+      code: "parent_unrepliable",
+      reason: "skeleton",
+    });
+  });
+
+  it("reply_to_email: 422 parent_unrepliable when parent has no Message-ID header", async () => {
+    const parent = makeParentOk({
+      headers: { ...makeParentOk().headers, message_id: null },
+    });
+    const getByMessageId = vi.fn(async () => parent);
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId,
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/reply_to_email", {
+      message_id: "<orig-1@example.com>",
+      body_text: "hi",
+    });
+    expect(r.status).toBe(422);
+    expect(r.body).toMatchObject({
+      code: "parent_unrepliable",
+      reason: "no_message_id",
+    });
+  });
+
+  it("reply_to_email: 200 — derives from/to/subject/in_reply_to and forwards to sendEmail", async () => {
+    const parent = makeParentOk();
+    const getByMessageId = vi.fn(async () => parent);
+    let captured: SendEmailInput | null = null;
+    const sendEmail = async (input: SendEmailInput): Promise<SendEmailResult> => {
+      captured = input;
+      return {
+        message_id: "<reply-new@acme.com>",
+        sent_at: "2026-05-21T19:00:00.000Z",
+      };
+    };
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId,
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+      },
+      sendEmail,
+    });
+    const r = await dispatch(deps, "/rpc/reply_to_email", {
+      message_id: "<orig-1@example.com>",
+      body_text: "thanks",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      message_id: "<reply-new@acme.com>",
+      sent_at: "2026-05-21T19:00:00.000Z",
+    });
+    expect(captured).not.toBeNull();
+    const args = captured!;
+    expect(args.from).toBe("alice@acme.com");
+    expect(args.to).toEqual(["sender@example.com"]);
+    expect(args.subject).toBe("Re: Q2 invoice");
+    expect(args.in_reply_to).toBe("<orig-1@example.com>");
+    expect(args.references).toEqual(["<orig-1@example.com>"]);
+  });
+
+  it("reply_to_email: 409 suppressed when sendEmail throws SuppressionBlockError", async () => {
+    const { SuppressionBlockError } = await import(
+      "../src/core/suppression.js"
+    );
+    const parent = makeParentOk();
+    const getByMessageId = vi.fn(async () => parent);
+    const sendEmail = vi.fn(async () => {
+      throw new SuppressionBlockError([
+        {
+          recipient: "sender@example.com",
+          reason: "bounced_permanent",
+          last_event_at: "2026-05-20T12:00:00.000Z",
+        },
+      ]);
+    });
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId,
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+      },
+      sendEmail,
+    });
+    const r = await dispatch(deps, "/rpc/reply_to_email", {
+      message_id: "<orig-1@example.com>",
+      body_text: "hi",
+    });
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({
+      code: "suppressed",
+      blocked_recipients: ["sender@example.com"],
+    });
   });
 });

@@ -17,6 +17,7 @@ const PARSED: ParsedMessage = {
     from: null,
     to: null,
     cc: null,
+    replyTo: null,
     subject: null,
     date: null,
     messageId: null,

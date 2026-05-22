@@ -4,6 +4,9 @@ export type ParsedHeaders = {
   from: string | null;
   to: string | null;
   cc: string | null;
+  // ADR-0022: forwarded so reply_to_email can pick the correct reply target
+  // on mailing-list mail without misrouting through `from`.
+  replyTo: string | null;
   subject: string | null;
   date: string | null;
   messageId: string | null;
@@ -83,6 +86,7 @@ export function parseMime(raw: Uint8Array): ParsedMessage {
       from: decodeStructuredHeader(headerValue(headers, "from")),
       to: decodeStructuredHeader(headerValue(headers, "to")),
       cc: decodeStructuredHeader(headerValue(headers, "cc")),
+      replyTo: decodeStructuredHeader(headerValue(headers, "reply-to")),
       subject: decodeStructuredHeader(headerValue(headers, "subject")),
       date: headerValue(headers, "date"),
       messageId: headerValue(headers, "message-id"),

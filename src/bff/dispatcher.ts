@@ -21,6 +21,10 @@ import type {
   PresignAttachmentInput,
 } from "../core/attachment-store.js";
 import { makeAttachmentS3Key } from "../core/attachment-store.js";
+import {
+  buildReplyComposeInput,
+  ReplyParentUnrepliable,
+} from "../core/reply-to-email.js";
 import type {
   ListInboxInput,
   MessageReader,
@@ -32,6 +36,7 @@ import {
   parseGetMessageInput,
   parseMarkReadInput,
   parseReadInboxInput,
+  parseReplyToEmailInput,
   parseSearchEmailInput,
   parseSendEmailInput,
   type ParseError,
@@ -90,6 +95,8 @@ export async function dispatch(
       return handleSearchEmail(deps, body);
     case "send_email":
       return handleSendEmail(deps, body);
+    case "reply_to_email":
+      return handleReplyToEmail(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -304,6 +311,83 @@ async function handleSendEmail(
 
   try {
     const result = await deps.sendEmail(parsed.value);
+    return ok(result);
+  } catch (err) {
+    if (err instanceof SuppressionBlockError) {
+      return {
+        status: 409,
+        body: {
+          code: "suppressed",
+          message: "one or more recipients are on the suppression list",
+          blocked_recipients: err.suppressed.map((s) => s.recipient),
+        },
+      };
+    }
+    return internalError(err);
+  }
+}
+
+async function handleReplyToEmail(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseReplyToEmailInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+  const input = parsed.value;
+
+  let parent;
+  try {
+    parent = await deps.reader.getByMessageId(input.message_id);
+  } catch (err) {
+    return internalError(err);
+  }
+  if (parent === null) {
+    return {
+      status: 404,
+      body: {
+        code: "parent_not_found",
+        message: `no message with id ${input.message_id}`,
+      },
+    };
+  }
+  if (parent.parse_status === "failed") {
+    return {
+      status: 422,
+      body: {
+        code: "parent_unrepliable",
+        reason: "skeleton",
+        message: "parent failed to parse and cannot be replied to",
+      },
+    };
+  }
+
+  let compose: SendEmailInput;
+  try {
+    const replyBody =
+      input.body_html !== undefined
+        ? { body_text: input.body_text, body_html: input.body_html }
+        : { body_text: input.body_text };
+    compose = buildReplyComposeInput(parent, replyBody, {
+      reply_all: input.reply_all ?? false,
+    });
+  } catch (err) {
+    if (err instanceof ReplyParentUnrepliable) {
+      return {
+        status: 422,
+        body: {
+          code: "parent_unrepliable",
+          reason: err.reason,
+          message: err.message,
+        },
+      };
+    }
+    return internalError(err);
+  }
+
+  // Reuse the send_email path: shared suppression handling, audit trail,
+  // outbound persistence (ADR-0017). The 409 mapping below mirrors send_email.
+  try {
+    const result = await deps.sendEmail(compose);
     return ok(result);
   } catch (err) {
     if (err instanceof SuppressionBlockError) {

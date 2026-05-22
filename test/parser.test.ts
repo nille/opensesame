@@ -421,6 +421,37 @@ describe("parseMime", () => {
     expect(parsed.bodyText).not.toContain("\r");
   });
 
+  it("parses Reply-To when present and defaults to null otherwise", () => {
+    const withReplyTo = enc.encode(
+      [
+        "From: list@example.com",
+        "To: alice@example.com",
+        "Reply-To: list-replies@example.com",
+        "Subject: digest",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "hi",
+        "",
+      ].join("\r\n"),
+    );
+    expect(parseMime(withReplyTo).headers.replyTo).toBe(
+      "list-replies@example.com",
+    );
+
+    const withoutReplyTo = enc.encode(
+      [
+        "From: alice@example.com",
+        "To: bob@example.com",
+        "Subject: hi",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "hello",
+        "",
+      ].join("\r\n"),
+    );
+    expect(parseMime(withoutReplyTo).headers.replyTo).toBeNull();
+  });
+
   it("extracts In-Reply-To and References threading headers", () => {
     const raw = enc.encode(
       [

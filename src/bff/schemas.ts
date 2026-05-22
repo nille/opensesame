@@ -369,6 +369,67 @@ export function parseSendEmailInput(
   return ok(out);
 }
 
+// ---- reply_to_email ----
+
+// Per ADR-0022 the caller passes only the parent's message_id and the body —
+// from/to/cc/subject/in_reply_to/references are server-derived from the
+// loaded parent. reply_all defaults to false; attachments are deferred to a
+// later slice (signature mirrors ADR-0007 to keep the wire shape stable).
+export type ReplyToEmailInput = {
+  message_id: string;
+  body_text: string;
+  body_html?: string;
+  reply_all?: boolean;
+};
+
+export function parseReplyToEmailInput(
+  body: unknown,
+): ParseResult<ReplyToEmailInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const messageId = expectString(obj["message_id"]);
+  if (messageId === null || messageId.length === 0) {
+    return fail("message_id", "missing", "message_id is required");
+  }
+
+  const bodyText = expectString(obj["body_text"]);
+  if (bodyText === null) {
+    return fail(
+      "body_text",
+      obj["body_text"] === undefined ? "missing" : "invalid_type",
+      "body_text must be a string",
+    );
+  }
+
+  const out: ReplyToEmailInput = {
+    message_id: messageId,
+    body_text: bodyText,
+  };
+
+  if (obj["body_html"] !== undefined) {
+    const h = expectString(obj["body_html"]);
+    if (h === null) {
+      return fail("body_html", "invalid_type", "body_html must be a string");
+    }
+    out.body_html = h;
+  }
+  if (obj["reply_all"] !== undefined) {
+    if (typeof obj["reply_all"] !== "boolean") {
+      return fail(
+        "reply_all",
+        "invalid_type",
+        "reply_all must be a boolean",
+      );
+    }
+    out.reply_all = obj["reply_all"];
+  }
+
+  return ok(out);
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

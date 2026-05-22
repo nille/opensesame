@@ -466,6 +466,15 @@
   margin-bottom: var(--r-8);
 }
 
+.reader__head--thread {
+  margin-bottom: var(--r-6);
+}
+
+.reader__threadmeta {
+  font-size: var(--t-mono-xs);
+  margin-top: var(--r-2);
+}
+
 .reader__subject {
   margin: 0 0 var(--r-4);
   font-size: var(--t-xl);
@@ -592,6 +601,136 @@
   color: var(--accent);
 }
 
+/* Thread stack (slice 8.6) — vertical list of expanded MessageView cards
+   alternating with one-line MessageStrip rows. The first card auto-opens;
+   strips expand on click. */
+.reader__stack {
+  max-width: var(--reader-max);
+  display: flex;
+  flex-direction: column;
+  gap: var(--r-3);
+}
+
+.msg-card {
+  border-top: 1px solid var(--rule);
+  padding: var(--r-4) 0 var(--r-2);
+  animation: msg-card-rise var(--d-fast) var(--ease-out);
+}
+
+/* The lead card has no top border — it sits flush under the subject. */
+.reader__stack > .msg-card:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+@keyframes msg-card-rise {
+  from { transform: translateY(2px); opacity: 0; }
+  to   { transform: none;            opacity: 1; }
+}
+
+.msg-card__head {
+  margin-bottom: var(--r-4);
+}
+
+.msg-card__actions {
+  display: flex;
+  gap: var(--r-2);
+  margin-top: var(--r-3);
+}
+
+.msg-card__body {
+  font-size: var(--t-lg);
+  line-height: var(--lh-prose);
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.msg-card--parsefail,
+.msg-card--notfound,
+.msg-card--error {
+  font-size: var(--t-mono-sm);
+  padding: var(--r-3) 0;
+}
+
+.msg-card__skel-line {
+  width: 90%;
+  height: 14px;
+  background: var(--paper-2);
+  margin-bottom: var(--r-2);
+  border-radius: var(--radius-sm);
+}
+.msg-card__skel-line--short { width: 50%; }
+
+/* Collapsed strip — sender · snippet · timestamp on a single line. Click
+   anywhere on the strip to expand. Mono register matches the inbox row's
+   meta line so the visual rhythm carries through the pane. */
+.msg-strip {
+  display: grid;
+  grid-template-columns: 16px max-content 1fr max-content;
+  align-items: baseline;
+  gap: var(--r-3);
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--rule);
+  padding: var(--r-2) 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+  transition: background-color var(--d-fast) var(--ease-out),
+              color var(--d-fast) var(--ease-out);
+}
+
+.msg-strip:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.msg-strip__gutter {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.msg-strip__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.msg-strip__sender {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 16ch;
+}
+
+.msg-strip__snippet {
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.msg-strip__time {
+  font-size: var(--t-mono-xs);
+  flex-shrink: 0;
+}
+
+.msg-strip__chip {
+  display: inline-block;
+  margin-left: var(--r-1);
+  padding: 0 4px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 2px;
+  color: var(--ink-faint);
+}
+
 /* Reader skeletons */
 .reader__skel-h1 {
   width: 60%;
@@ -626,7 +765,7 @@
   background: var(--paper);
   padding: var(--r-6) var(--r-8) var(--r-4);
   gap: var(--r-3);
-  overflow: hidden;
+  overflow-y: auto;
 }
 
 .composer__head {
@@ -694,18 +833,38 @@
 }
 
 .composer__body {
-  flex: 1;
   width: 100%;
   border: 0;
   outline: none;
   background: transparent;
-  resize: none;
+  resize: vertical;
   font-family: var(--font-sans);
   font-size: var(--t-lg);
   line-height: var(--lh-prose);
   color: var(--ink);
   padding: var(--r-3) 0;
   min-height: 200px;
+}
+
+/* Fresh-compose mode (no quote rendered) — keep the textarea growing to
+   fill the pane like before. Reply mode keeps a fixed body height so the
+   quoted parent stays in view alongside the operator's draft. */
+.composer:not(:has(.composer__quote)) .composer__body {
+  flex: 1;
+}
+
+.composer__quote {
+  margin: 0;
+  padding: var(--r-3) var(--r-3);
+  border-left: 2px solid var(--rule);
+  background: var(--paper-2);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-sm);
+  line-height: var(--lh-prose);
+  color: var(--ink-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
 }
 
 .composer__blocked {
@@ -731,8 +890,13 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding-top: var(--r-3);
+  padding: var(--r-3) 0;
   border-top: 1px solid var(--rule);
+  background: var(--paper);
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin-top: auto;
 }
 
 .composer__footmeta {

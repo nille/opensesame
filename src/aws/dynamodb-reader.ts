@@ -140,6 +140,7 @@ function projectOk(
     from: nullableString(row["from_raw"]),
     to: nullableString(row["to_raw"]),
     cc: nullableString(row["cc_raw"]),
+    reply_to: nullableString(row["reply_to_raw"]),
     subject: nullableString(row["subject"]),
     date: nullableString(row["date_raw"]),
     message_id: nullableString(row["message_id"]),
@@ -167,6 +168,7 @@ function projectOk(
     direction: readDirection(row),
     attachments: readAttachments(row),
     read_at: nullableString(row["read_at"]),
+    thread_id: nullableString(row["thread_id"]),
   };
 }
 
@@ -279,6 +281,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     from: nullableString(row["from_raw"]),
     to: nullableString(row["to_raw"]),
     cc: nullableString(row["cc_raw"]),
+    reply_to: nullableString(row["reply_to_raw"]),
     subject: nullableString(row["subject"]),
     date: nullableString(row["date_raw"]),
     in_reply_to: nullableString(row["in_reply_to"]),
@@ -291,6 +294,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     snippet: typeof row["snippet"] === "string" ? (row["snippet"] as string) : "",
     direction: readDirection(row),
     read_at: nullableString(row["read_at"]),
+    thread_id: nullableString(row["thread_id"]),
   };
   return ok;
 }

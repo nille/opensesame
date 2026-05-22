@@ -21,7 +21,22 @@ export type RpcSuppressed = {
   blocked_recipients: string[];
 };
 export type RpcError = { kind: "error"; code: string; message: string };
-export type RpcResult<T> = RpcOk<T> | RpcInvalid | RpcNotFound | RpcSuppressed | RpcError;
+export type RpcResult<T> =
+  | RpcOk<T>
+  | RpcInvalid
+  | RpcNotFound
+  | RpcSuppressed
+  | RpcError;
+
+// reply_to_email widens RpcResult with the 422 parent_unrepliable variant
+// (ADR-0022). Other tools never produce 422, so we keep them tightly typed.
+export type ReplyToEmailRpcResult =
+  | RpcOk<SendEmailResult>
+  | RpcInvalid
+  | RpcNotFound
+  | RpcSuppressed
+  | { kind: "parent_unrepliable"; reason: "skeleton" | "no_message_id"; message: string }
+  | RpcError;
 
 async function call<T>(tool: string, body: unknown): Promise<RpcResult<T>> {
   let res: Response;
@@ -94,6 +109,7 @@ export type InboxRowOk = {
   from: string | null;
   to: string | null;
   cc: string | null;
+  reply_to: string | null;
   subject: string | null;
   date: string | null;
   in_reply_to: string | null;
@@ -105,6 +121,10 @@ export type InboxRowOk = {
   // null when the message has never been opened. The UI uses this to render
   // an unread indicator in the inbox row gutter.
   read_at: string | null;
+  // ADR-0026 (slice 8.8): server-stamped thread root. null when the row was
+  // written before slice 8.8 or when the parse was too sparse to derive one;
+  // groupIntoThreads falls back to JWZ-style key resolution in that case.
+  thread_id: string | null;
 };
 
 export type InboxRowFailed = {
@@ -142,6 +162,7 @@ export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
   cc: string | null;
+  reply_to: string | null;
   subject: string | null;
   date: string | null;
   message_id: string | null;
@@ -173,6 +194,9 @@ export type ReadMessageOk = {
   direction: "in" | "out";
   attachments: StoredAttachment[];
   read_at: string | null;
+  // ADR-0026 (slice 8.8): server-stamped thread root, or null on legacy /
+  // unparseable rows.
+  thread_id: string | null;
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -227,6 +251,13 @@ export type SendEmailResult = {
   sent_at: string;
 };
 
+export type ReplyToEmailInput = {
+  message_id: string;
+  body_text: string;
+  body_html?: string;
+  reply_all?: boolean;
+};
+
 // ---- API surface ----
 
 export const bff = {
@@ -255,6 +286,69 @@ export const bff = {
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);
+  },
+  async replyToEmail(
+    input: ReplyToEmailInput,
+  ): Promise<ReplyToEmailRpcResult> {
+    // reply_to_email shares wire shape with send_email but adds the 422
+    // parent_unrepliable variant. The base `call` helper folds 422 into
+    // RpcError (code-only) — we widen it here so the UI can branch on
+    // reason.
+    let res: Response;
+    try {
+      res = await fetch(`${BFF_BASE}/rpc/reply_to_email`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+    } catch (err) {
+      return {
+        kind: "error",
+        code: "network_error",
+        message: err instanceof Error ? err.message : "BFF unreachable",
+      };
+    }
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      return {
+        kind: "error",
+        code: "invalid_response",
+        message: "BFF returned non-JSON for /rpc/reply_to_email",
+      };
+    }
+    if (res.ok) {
+      return { kind: "ok", value: data as SendEmailResult };
+    }
+    const obj = (data ?? {}) as Record<string, unknown>;
+    const code = typeof obj["code"] === "string" ? obj["code"] : "unknown";
+    const message =
+      typeof obj["message"] === "string" ? obj["message"] : `HTTP ${res.status}`;
+    if (res.status === 422 && code === "parent_unrepliable") {
+      const reason =
+        obj["reason"] === "skeleton" ? "skeleton" : "no_message_id";
+      return { kind: "parent_unrepliable", reason, message };
+    }
+    if (res.status === 400 && code === "invalid_request") {
+      return {
+        kind: "invalid_request",
+        field: typeof obj["field"] === "string" ? obj["field"] : "body",
+        reason: (obj["reason"] as RpcInvalid["reason"]) ?? "invalid_type",
+        message,
+      };
+    }
+    if (res.status === 404) return { kind: "not_found", code, message };
+    if (res.status === 409 && code === "suppressed") {
+      return {
+        kind: "suppressed",
+        message,
+        blocked_recipients: Array.isArray(obj["blocked_recipients"])
+          ? (obj["blocked_recipients"] as string[])
+          : [],
+      };
+    }
+    return { kind: "error", code, message };
   },
   health(): Promise<Response> {
     return fetch(`${BFF_BASE}/health`);

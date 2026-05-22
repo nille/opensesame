@@ -2,6 +2,7 @@ import { parseMime } from "./parser.js";
 import { makeInternalId } from "./internal-id.js";
 import type { RawMessageWriter } from "./raw-store.js";
 import type { MessageStore } from "./store.js";
+import { deriveThreadId } from "./threading.js";
 
 // Persist an outbound copy after a successful SES send (ADR-0017).
 //
@@ -85,6 +86,15 @@ export async function persistOutbound(
     receivedAt: input.sentAt,
   });
 
+  // ADR-0026: derive thread_id from the same headers — for an outbound reply
+  // the `In-Reply-To`/`References` lines flow through `parseMime`, so this
+  // resolves to the inbound parent's thread root and the row clusters with it.
+  const threadId = deriveThreadId({
+    messageId: stitched.headers.messageId,
+    inReplyTo: stitched.headers.inReplyTo,
+    references: stitched.headers.references,
+  });
+
   await deps.store.writeMessage({
     parse_status: "ok",
     internal_id: internalId,
@@ -94,6 +104,7 @@ export async function persistOutbound(
     schema_v: "1",
     parsed: stitched,
     direction: "out",
+    thread_id: threadId,
   });
 
   return { internalId, s3Key, rawS3Uri, storedMessageId };

@@ -13,6 +13,7 @@ function makeParsed(overrides: Partial<ParsedMessage> = {}): ParsedMessage {
       from: "Sender Name <sender@example.com>",
       to: "alice@acme.com",
       cc: null,
+      replyTo: null,
       subject: "Re: Q2 invoice",
       date: "Tue, 19 May 2026 14:23:10 +0000",
       messageId: "<msg-1@example.com>",

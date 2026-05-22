@@ -1,77 +1,47 @@
 import type { JSX } from "react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { bff, type StoredAttachment } from "../lib/bff-client.ts";
-import { formatBytes } from "../lib/format.ts";
+import {
+  bff,
+  type InboxRowOk,
+  type InboxRowFailed,
+  type StoredAttachment,
+} from "../lib/bff-client.ts";
+import type { Thread } from "../lib/threading.ts";
+import {
+  formatBytes,
+  formatRowTimestamp,
+  senderDisplay,
+} from "../lib/format.ts";
+import { useKeyboard } from "../hooks/useKeyboard.ts";
 
 interface ReaderProps {
-  messageId: string | null;
+  // The selected thread, or null when nothing is selected. The thread is the
+  // input — the latest row drives the subject and is auto-expanded; older
+  // rows render as collapsed strips that expand on click (slice 8.6).
+  thread: Thread | null;
+  // Reply to the latest row. Each expanded MessageView also has its own
+  // per-card Reply that targets that specific row's message_id.
   onReply: () => void;
-  // Primary key of the row currently selected in the inbox. Threaded through
-  // so mark_read can target THIS row by (address, internal_id) instead of
-  // re-resolving by RFC 5322 Message-ID. Self-addressed mail produces two
-  // rows sharing one Message-ID and the GSI hop picks one non-deterministically;
-  // the inbox already has the right PK in hand, so use it.
-  selectedPk: { address: string; internal_id: string } | null;
-  // Whether the selected inbox row is unread + inbound. Controls whether the
-  // mark_read effect fires at all — outbound rows aren't "unread" to begin with.
-  selectedUnread: boolean;
+  onReplyTo: (messageId: string) => void;
+  // Whether intra-thread keyboard nav (J/K, slice 8.7) is live. False when
+  // the composer is up — we don't want the stack moving under the operator
+  // while they're typing a reply.
+  keyboardEnabled: boolean;
 }
 
-// Reader displays one message as a feature article: subject as h1, mono
-// metadata block, body in proportional sans at --t-lg with 68ch measure.
+// Slice 8.6: the reader pane renders the whole conversation. Subject sits at
+// the top (latest row's subject); the stack below shows messages newest-first,
+// with the latest expanded by default and earlier messages as one-line strips
+// that expand on click. Each expanded MessageView fires its own mark-read
+// against its own row, which keeps the inbox unread dot honest — the dot
+// disappears once every inbound row has actually been opened.
 //
-// Empty (nothing selected) and not-found (BFF 404) are distinct copy states.
-// HTML body rendering is intentionally absent in slice 8 — text only.
+// Switching threads remounts this component (App passes key={rootKey}); the
+// `expanded` set is re-seeded with the latest's id on every fresh mount.
 
-export function Reader({
-  messageId,
-  onReply,
-  selectedPk,
-  selectedUnread,
-}: ReaderProps): JSX.Element {
-  const queryClient = useQueryClient();
-  const query = useQuery({
-    queryKey: ["message", messageId],
-    queryFn: () => {
-      if (messageId === null) throw new Error("no message id");
-      return bff.getMessage(messageId);
-    },
-    enabled: messageId !== null,
-  });
-
-  // Stamp read_at server-side using the inbox row's primary key. Decoupled
-  // from get_message: the row resolved by Message-ID may be the wrong one
-  // (self-addressed mail), but the inbox row's PK is unambiguous.
-  const markPkKey =
-    selectedUnread && selectedPk !== null
-      ? `${selectedPk.address}|${selectedPk.internal_id}`
-      : null;
-  useEffect(() => {
-    if (markPkKey === null || selectedPk === null) return;
-    let cancelled = false;
-    void bff
-      .markRead({
-        address: selectedPk.address,
-        internal_id: selectedPk.internal_id,
-      })
-      .then((r) => {
-        if (cancelled) return;
-        if (r.kind === "ok") {
-          // Refresh inbox so the unread dot disappears without waiting for
-          // the next 30s poll.
-          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-    // markPkKey changes whenever selectedPk does; selectedPk is captured
-    // by reference for the call body.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [markPkKey, queryClient]);
-
-  if (messageId === null) {
+export function Reader({ thread, onReply, onReplyTo, keyboardEnabled }: ReaderProps): JSX.Element {
+  if (thread === null) {
     return (
       <section className="reader reader--empty">
         <div className="reader__empty mono faint">
@@ -81,66 +51,262 @@ export function Reader({
     );
   }
 
-  if (query.isLoading) {
+  // Failed lead → render the parse-failed card directly. Skeleton rows never
+  // share a thread with parsed rows in slice 8.6 (groupIntoThreads keeps them
+  // isolated), so a failed lead means the whole thread is one failed row.
+  const lead = thread.rows[0];
+  if (lead === undefined) {
+    const failed = thread.failedRows[0];
+    if (failed === undefined) return <section className="reader" />;
     return (
-      <section className="reader reader--loading">
-        <div className="reader__skel-h1" />
-        <div className="reader__skel-meta" />
-        <div className="reader__skel-line" />
-        <div className="reader__skel-line" />
-        <div className="reader__skel-line reader__skel-line--short" />
+      <section className="reader">
+        <FailedCard row={failed} />
       </section>
     );
   }
 
+  // Subject comes from the latest row — same string the inbox row already
+  // showed for the thread, with the canonical `Re:` already on the wire.
+  const subject = lead.subject ?? "(no subject)";
+
+  return (
+    <ThreadReader
+      thread={thread}
+      subject={subject}
+      onReply={onReply}
+      onReplyTo={onReplyTo}
+      keyboardEnabled={keyboardEnabled}
+    />
+  );
+}
+
+interface ThreadReaderProps {
+  thread: Thread;
+  subject: string;
+  onReply: () => void;
+  onReplyTo: (messageId: string) => void;
+  keyboardEnabled: boolean;
+}
+
+function ThreadReader({
+  thread,
+  subject,
+  onReply,
+  onReplyTo,
+  keyboardEnabled,
+}: ThreadReaderProps): JSX.Element {
+  // Seed the expansion set with the latest row's message_id (or its
+  // internal_id when there's no message_id, which keeps the affordance
+  // working for orphan rows that fell into a subject-fallback thread).
+  const lead = thread.rows[0]!;
+  const leadKey = expansionKey(lead);
+  const [expanded, setExpanded] = useState<Set<string>>(
+    () => new Set([leadKey]),
+  );
+
+  const toggle = (key: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  // Intra-thread nav (slice 8.7, ADR-0025). Capital J expands the topmost
+  // collapsed strip; capital K collapses the bottommost expanded card that
+  // isn't the lead. Lowercase j/k stay inter-thread (App owns those).
+  // Modifiers other than Shift bail so OS shortcuts still work.
+  useKeyboard(
+    useCallback(
+      (e: KeyboardEvent) => {
+        if (e.metaKey || e.ctrlKey || e.altKey) return;
+        if (e.key === "J") {
+          const next = thread.rows.find(
+            (r) => !expanded.has(expansionKey(r)),
+          );
+          if (next === undefined) return;
+          e.preventDefault();
+          setExpanded((prev) => new Set(prev).add(expansionKey(next)));
+        } else if (e.key === "K") {
+          // Walk bottom-up; skip the lead (rows[0]) so it stays open.
+          for (let i = thread.rows.length - 1; i > 0; i--) {
+            const row = thread.rows[i]!;
+            const key = expansionKey(row);
+            if (expanded.has(key)) {
+              e.preventDefault();
+              setExpanded((prev) => {
+                const nextSet = new Set(prev);
+                nextSet.delete(key);
+                return nextSet;
+              });
+              return;
+            }
+          }
+        }
+      },
+      [thread.rows, expanded],
+    ),
+    keyboardEnabled,
+  );
+
+  return (
+    <section className="reader">
+      <header className="reader__head reader__head--thread">
+        <h1 className="reader__subject">{subject}</h1>
+        <div className="reader__threadmeta mono faint">
+          {thread.count} {thread.count === 1 ? "message" : "messages"}
+          {thread.hasOutbound ? " · sent" : ""}
+        </div>
+      </header>
+      <div className="reader__stack">
+        {thread.rows.map((row, idx) => {
+          const key = expansionKey(row);
+          const isOpen = expanded.has(key);
+          const isLeadRow = idx === 0;
+          if (isOpen) {
+            return (
+              <MessageView
+                key={key}
+                row={row}
+                onReply={isLeadRow ? onReply : () => onReplyTo(row.message_id ?? "")}
+                onCollapse={
+                  isLeadRow
+                    ? null
+                    : () => toggle(key)
+                }
+                replyDisabled={row.message_id === null}
+              />
+            );
+          }
+          return (
+            <MessageStrip key={key} row={row} onExpand={() => toggle(key)} />
+          );
+        })}
+        {thread.failedRows.map((row) => (
+          <FailedCard key={row.internal_id} row={row} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// Per-row identity for React keys + the expansion set. internal_id is the
+// only PK component that's always unique — message_id collides on
+// self-addressed mail (one outbound + one inbound row sharing one Message-ID),
+// which would otherwise let two strips share a React key and trigger a
+// React duplicate-key warning + lose one of the rows.
+function expansionKey(row: InboxRowOk): string {
+  return row.internal_id;
+}
+
+interface MessageViewProps {
+  row: InboxRowOk;
+  onReply: () => void;
+  // null when this card is the latest (its collapse would hide the active
+  // selection's body). Otherwise renders a "collapse" affordance that hides
+  // the card back to a strip.
+  onCollapse: (() => void) | null;
+  replyDisabled: boolean;
+}
+
+// Renders one fully-expanded message: header dl, body article, attachments.
+// Fetches via bff.getMessage keyed by row.message_id and fires mark_read
+// against the row's PK when it mounts (and the row is inbound + unread).
+function MessageView({
+  row,
+  onReply,
+  onCollapse,
+  replyDisabled,
+}: MessageViewProps): JSX.Element {
+  const queryClient = useQueryClient();
+  const messageId = row.message_id;
+
+  const query = useQuery({
+    queryKey: ["message", messageId],
+    queryFn: () => {
+      if (messageId === null) throw new Error("no message id");
+      return bff.getMessage(messageId);
+    },
+    enabled: messageId !== null,
+  });
+
+  // Per-card mark-read. Each expanded inbound + unread row stamps read_at
+  // server-side using its own PK. Outbound rows skip; rows that stay
+  // collapsed never run this effect because they never mount as a
+  // MessageView. The inbox unread dot lifts only after every inbound row
+  // has been expanded at least once — which matches what the dot is saying.
+  const shouldMark = row.direction === "in" && row.read_at === null;
+  const markPkKey = shouldMark ? `${row.address}|${row.internal_id}` : null;
+  useEffect(() => {
+    if (markPkKey === null) return;
+    let cancelled = false;
+    void bff
+      .markRead({ address: row.address, internal_id: row.internal_id })
+      .then((r) => {
+        if (cancelled) return;
+        if (r.kind === "ok") {
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // markPkKey already encodes the PK; row reference doesn't drive identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [markPkKey, queryClient]);
+
+  // Loading: a compact card skeleton (not the full-pane one — the stack has
+  // its own visual rhythm and a 5-line ghost would push later cards offscreen).
+  if (messageId === null || query.isLoading) {
+    return (
+      <article className="msg-card msg-card--loading">
+        <div className="msg-card__skel-line" />
+        <div className="msg-card__skel-line msg-card__skel-line--short" />
+      </article>
+    );
+  }
+
   const result = query.data;
-  if (!result) return <section className="reader" />;
+  if (!result) return <article className="msg-card" />;
 
   if (result.kind === "not_found") {
     return (
-      <section className="reader reader--notfound">
-        <div className="reader__notfound mono">
-          <span className="muted">no such message · </span>
-          <span className="faint">{messageId}</span>
-        </div>
-      </section>
+      <article className="msg-card msg-card--notfound mono faint">
+        no such message · {messageId}
+      </article>
     );
   }
 
   if (result.kind === "error") {
     return (
-      <section className="reader reader--error">
-        <div className="reader__error mono">
-          <span>error · </span>
-          <span className="faint">{result.code}: {result.message}</span>
-        </div>
-      </section>
+      <article className="msg-card msg-card--error mono">
+        error · {result.code}: {result.message}
+      </article>
     );
   }
 
   if (result.kind !== "ok") {
-    return <section className="reader" />;
+    return <article className="msg-card" />;
   }
 
   const msg = result.value;
   if (msg.parse_status === "failed") {
     return (
-      <section className="reader reader--parsefail">
-        <div className="reader__parsefail mono">
-          <span>parse failed · </span>
-          <span className="faint">{msg.parse_error}</span>
-        </div>
+      <article className="msg-card msg-card--parsefail mono">
+        <span>parse failed · </span>
+        <span className="faint">{msg.parse_error}</span>
         <div className="reader__rawuri mono faint">{msg.raw_s3_uri}</div>
-      </section>
+      </article>
     );
   }
 
   return (
-    <section className="reader">
-      <header className="reader__head">
-        <h1 className="reader__subject">
-          {msg.headers.subject ?? "(no subject)"}
-        </h1>
+    <article className="msg-card msg-card--open">
+      <div className="msg-card__head">
         <dl className="reader__meta mono">
           <dt>from</dt>
           <dd>{msg.headers.from ?? "—"}</dd>
@@ -157,21 +323,75 @@ export function Reader({
           <dt>id</dt>
           <dd className="faint">{msg.headers.message_id ?? "—"}</dd>
         </dl>
-        <div className="reader__actions">
-          <button className="btn btn--quiet" onClick={onReply}>
+        <div className="msg-card__actions">
+          <button
+            className="btn btn--quiet"
+            onClick={onReply}
+            disabled={replyDisabled}
+            title={replyDisabled ? "no Message-ID — cannot reply" : undefined}
+          >
             <span>Reply</span>
-            <span className="mono faint">r</span>
+            {onCollapse === null ? <span className="mono faint">r</span> : null}
           </button>
+          {onCollapse !== null ? (
+            <button className="btn btn--quiet" onClick={onCollapse}>
+              <span>Collapse</span>
+            </button>
+          ) : null}
         </div>
-      </header>
-      <article className="reader__body">{msg.body_text}</article>
+      </div>
+      <div className="msg-card__body">{msg.body_text}</div>
       {msg.attachments.length > 0 && msg.headers.message_id !== null ? (
         <Attachments
           messageId={msg.headers.message_id}
           attachments={msg.attachments}
         />
       ) : null}
-    </section>
+    </article>
+  );
+}
+
+interface MessageStripProps {
+  row: InboxRowOk;
+  onExpand: () => void;
+}
+
+// One-line collapsed view: sender · snippet · timestamp. Clicking the strip
+// (or pressing Enter when focused) expands it in place.
+function MessageStrip({ row, onExpand }: MessageStripProps): JSX.Element {
+  const sender = senderDisplay(row.from);
+  const unread = row.direction === "in" && row.read_at === null;
+  const showSentChip = row.direction === "out";
+  return (
+    <button
+      type="button"
+      className={"msg-strip" + (unread ? " msg-strip--unread" : "")}
+      onClick={onExpand}
+    >
+      <span className="msg-strip__gutter">
+        {unread ? <span className="msg-strip__dot" /> : null}
+      </span>
+      <span className="msg-strip__sender">{sender}</span>
+      <span className="msg-strip__snippet">{row.snippet}</span>
+      <span className="msg-strip__time mono faint">
+        {formatRowTimestamp(row.received_at)}
+        {showSentChip ? <span className="msg-strip__chip mono"> sent</span> : null}
+      </span>
+    </button>
+  );
+}
+
+interface FailedCardProps {
+  row: InboxRowFailed;
+}
+
+function FailedCard({ row }: FailedCardProps): JSX.Element {
+  return (
+    <article className="msg-card msg-card--parsefail mono">
+      <span>parse failed · </span>
+      <span className="faint">{row.parse_error}</span>
+      <div className="reader__rawuri mono faint">{row.raw_s3_uri}</div>
+    </article>
   );
 }
 
@@ -204,8 +424,8 @@ function Attachments({ messageId, attachments }: AttachmentsProps): JSX.Element 
   };
 
   return (
-    <section className="reader__attachments" aria-labelledby="attachments-label">
-      <h2 id="attachments-label" className="reader__attachments-title mono">
+    <section className="reader__attachments" aria-labelledby={`attachments-${messageId}`}>
+      <h2 id={`attachments-${messageId}`} className="reader__attachments-title mono">
         attachments · {attachments.length}
       </h2>
       <ul className="reader__attachments-list">
