@@ -39,6 +39,13 @@ interface InboxListProps {
   // so the unread dot/badge can flip optimistically before the RPC settles.
   pendingReads: Map<string, boolean>;
   onToggleRead: (rootKey: string, next: boolean) => void;
+  // Slice 8.14 (ADR-0032). Bulk multi-select. Membership is checked per
+  // row; the checkbox renders selected/disabled state from this set.
+  // Subject-fallback rollups (rootKey not starting with "<") render the
+  // checkbox disabled and are silently skipped on Shift+click range
+  // expansion.
+  selection: Set<string>;
+  onToggleSelection: (rootKey: string, withShift: boolean) => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -60,6 +67,8 @@ export function InboxList({
   onToggleTrash,
   pendingReads,
   onToggleRead,
+  selection,
+  onToggleSelection,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -100,7 +109,7 @@ export function InboxList({
   return (
     <div className="inbox-list" ref={listRef}>
       {threads.map((thread, idx) => {
-        const selected = idx === selectedIdx;
+        const focused = idx === selectedIdx;
         const lead = thread.rows[0];
         if (lead === undefined) {
           // Skeleton-only thread — failed parse row standing alone.
@@ -111,7 +120,7 @@ export function InboxList({
               data-idx={idx}
               className={
                 "inbox-row inbox-row--failed" +
-                (selected ? " inbox-row--selected" : "")
+                (focused ? " inbox-row--selected" : "")
               }
               onClick={() => onSelect(idx)}
               role="button"
@@ -164,13 +173,18 @@ export function InboxList({
         const pendingRead = pendingReads.get(thread.rootKey);
         const unreadFilled =
           pendingRead !== undefined ? !pendingRead : thread.unread;
+        // Slice 8.14. Bulk-select membership; subject-fallback rollups
+        // are gated out (same as the annotation buttons).
+        const checked = selection.has(thread.rootKey);
 
         return (
           <div
             key={thread.rootKey}
             data-idx={idx}
             className={
-              "inbox-row" + (selected ? " inbox-row--selected" : "")
+              "inbox-row" +
+              (focused ? " inbox-row--selected" : "") +
+              (checked ? " inbox-row--checked" : "")
             }
             onClick={() => onSelect(idx)}
             role="button"
@@ -183,6 +197,30 @@ export function InboxList({
                 (unreadFilled && !filled ? " inbox-row__gutter--unread" : "")
               }
             >
+              <input
+                type="checkbox"
+                className="inbox-row__check"
+                aria-label={
+                  threadable
+                    ? checked
+                      ? "Deselect thread"
+                      : "Select thread"
+                    : "Cannot select thread"
+                }
+                checked={checked}
+                disabled={!threadable}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (!threadable) return;
+                  onToggleSelection(thread.rootKey, e.shiftKey);
+                }}
+                onChange={() => {
+                  // Selection state lives in App.tsx; controlled input
+                  // needs an onChange to silence React's warning, but
+                  // the actual toggle work happens in onClick where we
+                  // have access to shiftKey for range select.
+                }}
+              />
               {/* Filled star always renders. Unstarred star renders too —
                   CSS hides it unless the row is hovered or the thread is
                   unread (so the dot can swap to a star on hover). */}

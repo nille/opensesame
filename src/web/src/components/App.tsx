@@ -26,6 +26,8 @@ import {
   type ComposerReplyParent,
   type ComposerSeed,
 } from "./Composer.tsx";
+import { BulkActionBar } from "./BulkActionBar.tsx";
+import { computeRange } from "../lib/selection.ts";
 import "./app.css";
 
 // The active mailbox is configured per deploy, not picked in-product.
@@ -86,6 +88,21 @@ export function App(): JSX.Element {
   // The reader-header snooze picker is controlled so the global `z` shortcut
   // can pop it open while keeping the gutter pickers self-managed.
   const [readerSnoozePickerOpen, setReaderSnoozePickerOpen] = useState(false);
+  // ADR-0032 (slice 8.14). Bulk multi-select. The selection set keys by
+  // Thread.rootKey — the same handle every annotation flow already uses —
+  // so a bulk apply just fans out the existing per-thread handlers over
+  // the set. Subject-fallback rollups (rootKey not starting with "<") are
+  // never selectable; the same gate that disables the per-row buttons also
+  // gates the row checkbox.
+  const [selection, setSelection] = useState<Set<string>>(() => new Set());
+  // The most-recent plain-click anchor for Shift+click range selection.
+  // Reset on view switch / search transition / Esc-clear, mirroring the
+  // selection set itself. Null means "no anchor yet" — a Shift+click with
+  // no anchor falls back to a plain toggle.
+  const [anchorRootKey, setAnchorRootKey] = useState<string | null>(null);
+  // Picker open state for the bulk-action-bar's snooze button (mirrors the
+  // reader-header pattern so the picker can be closed declaratively).
+  const [bulkSnoozePickerOpen, setBulkSnoozePickerOpen] = useState(false);
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", MAILBOX],
@@ -285,21 +302,35 @@ export function App(): JSX.Element {
     }
   }, [threads.length, selectedIdx]);
 
+  // Bulk-select helpers (ADR-0032, slice 8.14). Selection is purely
+  // client-side state; clearing on view switch / search transition keeps it
+  // from carrying invisible rows across mode changes.
+  const clearSelection = useCallback(() => {
+    setSelection((prev) => (prev.size === 0 ? prev : new Set()));
+    setAnchorRootKey(null);
+    setBulkSnoozePickerOpen(false);
+  }, []);
+
   // Switching views snaps to the top and re-opens the reader on first row.
   // Also clears any active search — the rail nav is meaningless inside a
   // search results list.
-  const switchView = useCallback((next: View) => {
-    setView(next);
-    setSelectedIdx(0);
-    setPane({ mode: "reader" });
-    setSearchQuery("");
-  }, []);
+  const switchView = useCallback(
+    (next: View) => {
+      setView(next);
+      setSelectedIdx(0);
+      setPane({ mode: "reader" });
+      setSearchQuery("");
+      clearSelection();
+    },
+    [clearSelection],
+  );
 
   // Reset selection when the source list changes shape (entering / leaving
   // search, or the search query itself changing).
   useEffect(() => {
     setSelectedIdx(0);
-  }, [searchActive, debouncedQuery]);
+    clearSelection();
+  }, [searchActive, debouncedQuery, clearSelection]);
 
   // Close the reader's snooze picker whenever the selected thread changes
   // — leaving it open across selections produces a popover anchored to a
@@ -490,6 +521,110 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0032 (slice 8.14). Toggle a thread's membership in the bulk
+  // selection set. Plain toggle when `withShift` is false; Shift+click
+  // extends an inclusive range from the anchor to the target in the
+  // current `threads` view order. A range select with no anchor falls
+  // back to a plain toggle and stamps the anchor.
+  const toggleSelection = useCallback(
+    (rootKey: string, withShift: boolean): void => {
+      // Subject-fallback rollups never carry a server thread id and so
+      // can't fan out an UpdateItem. Match the per-thread gate.
+      if (!rootKey.startsWith("<")) return;
+      if (withShift && anchorRootKey !== null && anchorRootKey !== rootKey) {
+        const range = computeRange(threads, anchorRootKey, rootKey);
+        if (range.length > 0) {
+          setSelection((prev) => {
+            const next = new Set(prev);
+            for (const k of range) next.add(k);
+            return next;
+          });
+          // Anchor stays at its previous value so successive Shift+clicks
+          // grow / shrink relative to the original click. Matches Gmail.
+          return;
+        }
+      }
+      setSelection((prev) => {
+        const next = new Set(prev);
+        if (next.has(rootKey)) {
+          next.delete(rootKey);
+        } else {
+          next.add(rootKey);
+        }
+        return next;
+      });
+      setAnchorRootKey(rootKey);
+    },
+    [anchorRootKey, threads],
+  );
+
+  // Bulk apply: fan out one of the per-thread handlers over the current
+  // selection. Promise.allSettled posture means a per-thread failure
+  // rolls back only that row (each handler owns its own pending-map
+  // rollback) and the rest of the selection still applies.
+  const bulkApply = useCallback(
+    (apply: (rootKey: string) => void): void => {
+      for (const rootKey of selection) apply(rootKey);
+    },
+    [selection],
+  );
+
+  // Disambiguation predicates for the bulk action bar buttons. "All
+  // starred" means every selected thread already shows starred (server
+  // value, optionally overridden by a pending intent). The bar uses
+  // these to pick "Star All" vs "Unstar All" and similar pairs. Mixed
+  // selections default to the add-to-set bias (Star All / Trash All /
+  // Mark Read All).
+  const allSelectedStarred = useMemo<boolean>(() => {
+    if (selection.size === 0) return false;
+    for (const t of threads) {
+      if (!selection.has(t.rootKey)) continue;
+      const pending = pendingStars.get(t.rootKey);
+      const filled = pending ?? t.starred;
+      if (!filled) return false;
+    }
+    return true;
+  }, [selection, threads, pendingStars]);
+
+  const allSelectedTrashed = useMemo<boolean>(() => {
+    if (selection.size === 0) return false;
+    for (const t of threads) {
+      if (!selection.has(t.rootKey)) continue;
+      const pending = pendingTrashes.get(t.rootKey);
+      const filled = pending ?? t.trashed;
+      if (!filled) return false;
+    }
+    return true;
+  }, [selection, threads, pendingTrashes]);
+
+  // For mark-read disambiguation: "all read" means every selected thread
+  // has zero unread inbound rows. A selection containing only outbound
+  // threads would render the button disabled (handled below) — this
+  // predicate doesn't gate that case, just picks the verb.
+  const allSelectedRead = useMemo<boolean>(() => {
+    if (selection.size === 0) return false;
+    for (const t of threads) {
+      if (!selection.has(t.rootKey)) continue;
+      const pending = pendingReads.get(t.rootKey);
+      const unread =
+        pending !== undefined ? !pending : t.unread;
+      if (unread) return false;
+    }
+    return true;
+  }, [selection, threads, pendingReads]);
+
+  // Disable mark-read All when every selected thread has no inbound
+  // rows — there is nothing to flip on the wire. Outbound-only threads
+  // can't be unread.
+  const anySelectedHasInbound = useMemo<boolean>(() => {
+    if (selection.size === 0) return false;
+    for (const t of threads) {
+      if (!selection.has(t.rootKey)) continue;
+      if (t.rows.some((r) => r.direction === "in")) return true;
+    }
+    return false;
+  }, [selection, threads]);
+
   // Resolve the parent for reply mode. Reuses the same ["message", id] cache
   // entry that the Reader populated, so this is a free hit in the common case.
   const replyParentId =
@@ -525,12 +660,32 @@ export function App(): JSX.Element {
         if (pane.mode === "composer") return; // composer owns its own keys
         if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+        if (e.key === "Escape" && selection.size > 0) {
+          // Slice 8.14. Esc clears a non-empty selection. Composer-mode
+          // is handled by the early return above, so this only fires in
+          // reader-mode; search input has its own Escape handler that
+          // doesn't bubble here.
+          e.preventDefault();
+          clearSelection();
+          return;
+        }
         if (e.key === "j") {
           e.preventDefault();
           setSelectedIdx((i) => Math.min(threads.length - 1, i + 1));
         } else if (e.key === "k") {
           e.preventDefault();
           setSelectedIdx((i) => Math.max(0, i - 1));
+        } else if (e.key === "x") {
+          // Slice 8.14. Toggle the focused thread's selection
+          // membership. Same gate as star/snooze/trash/read — server
+          // thread ids only.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          // Keyboard `x` is always a plain toggle — Shift+x is reserved
+          // for a future "select all visible" affordance.
+          toggleSelection(t.rootKey, false);
         } else if (e.key === "c") {
           e.preventDefault();
           openCompose(null);
@@ -612,9 +767,10 @@ export function App(): JSX.Element {
               "z / Z    snooze (picker) / unsnooze immediately",
               "#        trash / untrash selected thread",
               "Shift+U  mark thread read / unread",
+              "x        add / remove focused thread from selection",
               "c        compose new",
               "t        toggle theme",
-              "esc      close composer / clear search",
+              "esc      close composer / clear search / clear selection",
               "?        this cheat sheet",
             ].join("\n"),
           );
@@ -638,6 +794,9 @@ export function App(): JSX.Element {
         openCompose,
         replyToCurrent,
         toggle,
+        selection.size,
+        toggleSelection,
+        clearSelection,
       ],
     ),
     pane.mode !== "composer",
@@ -676,26 +835,54 @@ export function App(): JSX.Element {
         searchHitCount={searchHitCount}
         onSearchKeyDown={onSearchKeyDown}
       />
-      <InboxList
-        threads={threads}
-        selectedIdx={selectedIdx}
-        onSelect={setSelectedIdx}
-        loading={
-          searchActive
-            ? searchQueryResult.isFetching && messages.length === 0
-            : inboxQuery.isLoading
-        }
-        offline={offline}
-        searchActive={searchActive}
-        pendingStars={pendingStars}
-        onToggleStar={toggleStar}
-        pendingSnoozes={pendingSnoozes}
-        onPickSnooze={pickSnooze}
-        pendingTrashes={pendingTrashes}
-        onToggleTrash={toggleTrash}
-        pendingReads={pendingReads}
-        onToggleRead={toggleRead}
-      />
+      <div className="inbox-column">
+        {selection.size > 0 ? (
+          <BulkActionBar
+            count={selection.size}
+            allStarred={allSelectedStarred}
+            allTrashed={allSelectedTrashed}
+            allRead={allSelectedRead}
+            anyHasInbound={anySelectedHasInbound}
+            snoozePickerOpen={bulkSnoozePickerOpen}
+            onSnoozePickerOpenChange={setBulkSnoozePickerOpen}
+            onClear={clearSelection}
+            onStarAll={() =>
+              bulkApply((rootKey) => toggleStar(rootKey, !allSelectedStarred))
+            }
+            onTrashAll={() =>
+              bulkApply((rootKey) => toggleTrash(rootKey, !allSelectedTrashed))
+            }
+            onMarkReadAll={() =>
+              bulkApply((rootKey) => toggleRead(rootKey, !allSelectedRead))
+            }
+            onPickSnooze={(snoozedUntil) =>
+              bulkApply((rootKey) => pickSnooze(rootKey, snoozedUntil))
+            }
+          />
+        ) : null}
+        <InboxList
+          threads={threads}
+          selectedIdx={selectedIdx}
+          onSelect={setSelectedIdx}
+          loading={
+            searchActive
+              ? searchQueryResult.isFetching && messages.length === 0
+              : inboxQuery.isLoading
+          }
+          offline={offline}
+          searchActive={searchActive}
+          pendingStars={pendingStars}
+          onToggleStar={toggleStar}
+          pendingSnoozes={pendingSnoozes}
+          onPickSnooze={pickSnooze}
+          pendingTrashes={pendingTrashes}
+          onToggleTrash={toggleTrash}
+          pendingReads={pendingReads}
+          onToggleRead={toggleRead}
+          selection={selection}
+          onToggleSelection={toggleSelection}
+        />
+      </div>
       {pane.mode === "reader" ? (
         (() => {
           // Resolve the star indicator state for the selected thread once,

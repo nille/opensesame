@@ -354,10 +354,36 @@
 
 .inbox-row__gutter {
   display: flex;
-  justify-content: center;
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   padding-top: 6px;
   position: relative;
+}
+
+/* Slice 8.14 — selection checkbox sits at the top of the gutter, leading
+   the existing star/snooze/trash/mark-read group. Hidden by default,
+   surfaces on row hover and stays visible while the row is selected
+   (matches the per-row icon reveal posture). */
+.inbox-row__check {
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out);
+}
+.inbox-row:hover .inbox-row__check,
+.inbox-row--checked .inbox-row__check {
+  opacity: 1;
+}
+.inbox-row__check:disabled {
+  cursor: not-allowed;
+  opacity: 0;
+}
+.inbox-row:hover .inbox-row__check:disabled {
+  opacity: 0.25;
 }
 
 .inbox-row__dot {
@@ -1421,4 +1447,67 @@
 }
 .markread--header:hover:not(.markread--disabled) {
   background: var(--paper-2);
+}
+
+/* ============================================================
+   BULK ACTION BAR (slice 8.14, ADR-0032)
+   ============================================================
+ *
+ * Sits at the top of the inbox column when the operator has at least one
+ * thread in the bulk-select set. Re-uses the four `--header` icon
+ * variants so the bar reads as a sibling of the reader-header affordance
+ * row. The accent rule on the bottom edge marks the bar as a transient
+ * mode indicator, mirroring the inbox-row--selected accent rules.
+ */
+
+.inbox-column {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.inbox-column .inbox-list {
+  border-right: 0;
+  flex: 1;
+}
+
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--r-3);
+  padding: var(--r-2) var(--r-4);
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+  color: var(--ink);
+}
+
+.bulk-bar__count {
+  font-size: var(--t-mono-sm);
+  color: var(--accent);
+  letter-spacing: -0.01em;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.bulk-bar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--r-2);
+  flex: 1;
+}
+
+.bulk-bar__clear {
+  background: transparent;
+  border: 0;
+  padding: var(--r-1) var(--r-2);
+  cursor: pointer;
+  font-size: var(--t-mono-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--d-fast) var(--ease-out);
+}
+.bulk-bar__clear:hover {
+  background: var(--paper);
 }
