@@ -357,6 +357,7 @@
   justify-content: center;
   align-items: flex-start;
   padding-top: 6px;
+  position: relative;
 }
 
 .inbox-row__dot {
@@ -367,6 +368,37 @@
 }
 .inbox-row__dot--danger {
   background: var(--danger);
+}
+
+/* Slice 8.10 (ADR-0028).
+   Gutter star — three states share the same column:
+   - filled (starred): always visible.
+   - unread + unstarred: dot wins by default; star fades in on row hover.
+   - read + unstarred: empty star fades in on row hover.
+
+   The unread dot and the empty star occupy the same 14×14 box — when the
+   star reveals on hover, position-absolute it on top of the dot so the
+   row doesn't reflow. We never animate width/height; only opacity, which
+   stays compositor-friendly. */
+.inbox-row__gutter--starred .star {
+  opacity: 1;
+}
+
+.inbox-row__gutter--unread .star {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 6px;
+}
+.inbox-row__gutter--unread .inbox-row__dot {
+  /* Hide the dot on hover so the star can take its place without two
+     icons fighting for the same 14px box. */
+  transition: opacity var(--d-fast) var(--ease-out);
+}
+.inbox-row:hover .inbox-row__gutter--unread .inbox-row__dot {
+  opacity: 0;
 }
 
 .inbox-row__main {
@@ -468,6 +500,23 @@
 
 .reader__head--thread {
   margin-bottom: var(--r-6);
+}
+
+/* Slice 8.10. Subject sits to the left, star to the right of the same
+   line. The star is the only affordance in the header that's both
+   visible-by-default and operable — keeping it on the subject row makes
+   the relationship between the conversation and its star unambiguous. */
+.reader__subject-row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--r-3);
+  justify-content: space-between;
+}
+
+.reader__subject-row .reader__subject {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 .reader__threadmeta {
@@ -941,4 +990,99 @@
 .btn--primary:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+/* ============================================================
+   STAR (slice 8.10, ADR-0028)
+   ============================================================ */
+
+/*
+ * The star is its own button class because it's the only icon affordance
+ * in the project that exists in two visual variants (gutter / header) and
+ * has a stateful pending colour. Sharing rules with .btn--quiet would
+ * pull the rounded chrome and padding we don't want here — the star is
+ * an icon, not a chip.
+ *
+ * Day theme: --ink-faint outline, --accent fill on toggle.
+ * Night theme: same tokens; the night accent is the warm amber, which
+ * reads correctly against the cool paper without a separate variant.
+ */
+.star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  /* Default to invisible — the row's :hover and the variants below
+     decide when the affordance reveals. Header variant overrides this. */
+  opacity: 0;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.star:hover:not(.star--disabled) {
+  color: var(--ink);
+}
+
+.star--on {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.star--on:hover:not(.star--disabled) {
+  color: var(--accent);
+  filter: brightness(1.05);
+}
+
+/* Pending optimistic toggle — a faint mono cue without animating the
+   icon itself. The star already shows the intended next state; this
+   just whispers "in flight" via reduced opacity, no shimmer. */
+.star--pending {
+  opacity: 0.65;
+}
+
+.star--disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+  opacity: 0.4;
+}
+
+/* Gutter variant — 14×14 box, hover-revealed except when starred or
+   pending. The :hover scope is the row, not the button itself, so the
+   star reveals when the operator moves into the row, not just when they
+   land directly on the icon. */
+.star--gutter {
+  width: 14px;
+  height: 14px;
+}
+.inbox-row:hover .star--gutter,
+.inbox-row .star--gutter.star--on,
+.inbox-row .star--gutter.star--pending {
+  opacity: 1;
+}
+.inbox-row:hover .star--gutter.star--on,
+.inbox-row .star--gutter.star--on {
+  opacity: 1;
+}
+.inbox-row .star--gutter.star--disabled {
+  opacity: 0;
+}
+.inbox-row:hover .star--gutter.star--disabled {
+  opacity: 0.25;
+}
+
+/* Header variant — always visible alongside the subject. Sits at 18px
+   to read at the same optical weight as the H1's line height. */
+.star--header {
+  opacity: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.star--header:hover:not(.star--disabled) {
+  background: var(--paper-2);
 }

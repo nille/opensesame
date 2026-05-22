@@ -26,6 +26,8 @@ import type {
   ReadMessageOk,
   SearchEmailInput,
   SearchEmailResult,
+  StarThreadInput,
+  StarThreadResult,
   StoredAttachment,
   StoredMessageHeaders,
 } from "../core/store.js";
@@ -60,6 +62,7 @@ export function makeDynamoMessageReader(
       markReadByPrimaryKey(deps, address, internalId, now),
     searchEmail: (input) => searchEmail(deps, input),
     listThreadMessages: (input) => listThreadMessages(deps, input),
+    starThread: (input, now) => starThread(deps, input, now),
   };
 }
 
@@ -174,6 +177,7 @@ function projectOk(
     attachments: readAttachments(row),
     read_at: nullableString(row["read_at"]),
     thread_id: nullableString(row["thread_id"]),
+    starred_at: nullableString(row["starred_at"]),
   };
 }
 
@@ -300,6 +304,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     direction: readDirection(row),
     read_at: nullableString(row["read_at"]),
     thread_id: nullableString(row["thread_id"]),
+    starred_at: nullableString(row["starred_at"]),
   };
   return ok;
 }
@@ -582,6 +587,90 @@ async function listThreadMessages(
     : null;
 
   return { messages, next_cursor };
+}
+
+// ADR-0028 (slice 8.10). Per-thread star toggle with row-level fan-out:
+// resolve every primary key in the thread via ThreadIdGSI, then issue one
+// conditional UpdateItem per row. The attribute_exists(address) guard
+// prevents UpdateItem from creating a phantom row when the GSI projection
+// is stale; idempotent at the row level (re-star overwrites the timestamp,
+// re-unstar of an absent attribute is a benign no-op). Cap the fan-out at
+// MAX_STAR_FAN_OUT to bound write cost on pathological mailing-list
+// threads — the dispatcher echoes that ceiling.
+const MAX_STAR_FAN_OUT = 200;
+
+async function starThread(
+  deps: DynamoMessageReaderDeps,
+  input: StarThreadInput,
+  now: Date,
+): Promise<StarThreadResult> {
+  const isoNow = now.toISOString();
+
+  // Step 1: resolve primary keys for every row in the thread. Project only
+  // the PK pair so the GSI hop stays at one RCU per row.
+  const out = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.messagesTable,
+      IndexName: deps.threadIdGsiName,
+      KeyConditionExpression: "thread_id = :tid",
+      ExpressionAttributeValues: { ":tid": input.thread_id },
+      ProjectionExpression: "address, internal_id",
+      Limit: MAX_STAR_FAN_OUT,
+    }),
+  );
+  const rows = out.Items ?? [];
+
+  if (rows.length === 0) {
+    return {
+      thread_id: input.thread_id,
+      starred: input.starred,
+      starred_at: input.starred ? isoNow : null,
+      updated_count: 0,
+    };
+  }
+
+  // Step 2: fan out the per-row writes in parallel. attribute_exists(addr)
+  // guards against phantom rows from a stale GSI projection. We tolerate
+  // ConditionalCheckFailed silently — same row may have been deleted between
+  // the GSI Query and the UpdateItem; the operator's intent ("toggle this
+  // thread") still holds for the rest.
+  const results = await Promise.all(
+    rows.map(async (r) => {
+      const address = String(r["address"]);
+      const internalId = String(r["internal_id"]);
+      const cmd = input.starred
+        ? new UpdateCommand({
+            TableName: deps.messagesTable,
+            Key: { address, internal_id: internalId },
+            UpdateExpression: "SET starred_at = :now",
+            ConditionExpression: "attribute_exists(#addr)",
+            ExpressionAttributeNames: { "#addr": "address" },
+            ExpressionAttributeValues: { ":now": isoNow },
+          })
+        : new UpdateCommand({
+            TableName: deps.messagesTable,
+            Key: { address, internal_id: internalId },
+            UpdateExpression: "REMOVE starred_at",
+            ConditionExpression: "attribute_exists(#addr)",
+            ExpressionAttributeNames: { "#addr": "address" },
+          });
+      try {
+        await deps.client.send(cmd);
+        return true;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) return false;
+        throw err;
+      }
+    }),
+  );
+
+  const updated_count = results.filter(Boolean).length;
+  return {
+    thread_id: input.thread_id,
+    starred: input.starred,
+    starred_at: input.starred ? isoNow : null,
+    updated_count,
+  };
 }
 
 function encodeCursor(lek: Record<string, unknown>): string {

@@ -4,6 +4,7 @@ import {
   parseReadInboxInput,
   parseSearchEmailInput,
   parseSendEmailInput,
+  parseStarThreadInput,
 } from "../src/bff/schemas.js";
 
 // Hand-rolled parser tests (ADR-0021). Each parser must:
@@ -252,5 +253,75 @@ describe("parseSearchEmailInput", () => {
       expect(r.error.field).toBe("from");
       expect(r.error.code).toBe("invalid_type");
     }
+  });
+});
+
+describe("parseStarThreadInput (ADR-0028)", () => {
+  it("accepts a valid {thread_id, starred: true} body", () => {
+    const r = parseStarThreadInput({
+      thread_id: "<root@example.com>",
+      starred: true,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        thread_id: "<root@example.com>",
+        starred: true,
+      });
+    }
+  });
+
+  it("accepts {starred: false} for unstarring", () => {
+    const r = parseStarThreadInput({
+      thread_id: "<root@example.com>",
+      starred: false,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.starred).toBe(false);
+  });
+
+  it("rejects a missing thread_id", () => {
+    const r = parseStarThreadInput({ starred: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty thread_id with code=missing", () => {
+    const r = parseStarThreadInput({ thread_id: "", starred: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing starred with code=missing", () => {
+    const r = parseStarThreadInput({ thread_id: "<root@example.com>" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("starred");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a non-boolean starred", () => {
+    const r = parseStarThreadInput({
+      thread_id: "<root@example.com>",
+      starred: "yes",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("starred");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseStarThreadInput(null).ok).toBe(false);
+    expect(parseStarThreadInput([]).ok).toBe(false);
+    expect(parseStarThreadInput("hello").ok).toBe(false);
   });
 });

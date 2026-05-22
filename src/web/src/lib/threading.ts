@@ -37,6 +37,11 @@ export interface Thread {
   // True when any row is direction === "out". Drives the `sent` chip and
   // selection-mode unread elision in the renderer.
   hasOutbound: boolean;
+  // ADR-0028 (slice 8.10): true when any row carries a starred_at timestamp.
+  // Star is per-thread state but the storage is per-row; aggregating with OR
+  // means a stale window where one row hasn't been re-fetched yet still
+  // reads as starred — matches operator intent.
+  starred: boolean;
   // rows.length + failedRows.length. >1 means render the count chip.
   count: number;
 }
@@ -72,6 +77,7 @@ export function groupIntoThreads(rows: InboxRow[]): Thread[] {
       senders: [row.address],
       unread: false,
       hasOutbound: false,
+      starred: false,
       count: 1,
     };
     buckets.set(key, t);
@@ -98,6 +104,7 @@ function upsert(
       senders: [],
       unread: false,
       hasOutbound: false,
+      starred: false,
       count: 0,
     };
     buckets.set(key, t);
@@ -108,6 +115,7 @@ function upsert(
   t.rows.sort((a, b) => b.received_at.localeCompare(a.received_at));
   t.latestReceivedAt = t.rows[0]!.received_at;
   t.hasOutbound = t.hasOutbound || row.direction === "out";
+  if (row.starred_at !== null) t.starred = true;
   if (row.direction === "in" && row.read_at === null) t.unread = true;
   // Recompute senders newest-first to match the freshly-sorted rows order.
   t.senders = collectSenders(t.rows);

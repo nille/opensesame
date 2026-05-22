@@ -124,6 +124,11 @@ export type ReadMessageOk = {
   // before slice 8.8 (no backfill) and on parses too sparse for
   // deriveThreadId. The web client's JWZ fallback handles null.
   thread_id: string | null;
+  // ADR-0028 (slice 8.10): per-row sparse star annotation. Stamped on every
+  // row in a thread when starThread is called. Attribute-absent → null →
+  // unstarred. The client's groupIntoThreads aggregates "any starred row →
+  // starred thread."
+  starred_at: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -168,6 +173,10 @@ export type InboxRowOk = {
   // ADR-0026 (slice 8.8): server-stamped thread root, null when the row
   // predates this slice or the parse was too sparse for deriveThreadId.
   thread_id: string | null;
+  // ADR-0028 (slice 8.10): per-row sparse star annotation. The Starred
+  // sidebar entry filters the in-window inbox rows client-side via
+  // groupIntoThreads.
+  starred_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -245,6 +254,25 @@ export type ListThreadMessagesResult = {
   next_cursor: string | null;
 };
 
+// star_thread per ADR-0028. `starred: true` stamps `starred_at = now` on
+// every row in the thread; `starred: false` removes the attribute. Star is
+// a UI toggle — re-starring overwrites the timestamp rather than preserving
+// first-star-wins (cf. mark_read's first-open semantics). updated_count
+// reports how many rows were actually written; an empty thread returns 0
+// rather than 404 so a stale inbox-window rollup doesn't surface as an
+// error.
+export type StarThreadInput = {
+  thread_id: string;
+  starred: boolean;
+};
+
+export type StarThreadResult = {
+  thread_id: string;
+  starred: boolean;
+  starred_at: string | null;
+  updated_count: number;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -294,4 +322,10 @@ export interface MessageReader {
   listThreadMessages(
     input: ListThreadMessagesInput,
   ): Promise<ListThreadMessagesResult>;
+  // ADR-0028 (slice 8.10): toggle the star annotation on every row in the
+  // thread. Resolves rows via ThreadIdGSI (slice 8.9) and fans out
+  // conditional UpdateItems guarded by attribute_exists(address) so a
+  // stale primary key cannot create a phantom row. Plain SET / REMOVE on
+  // starred_at — star is a UI toggle, not a first-event timestamp.
+  starThread(input: StarThreadInput, now: Date): Promise<StarThreadResult>;
 }

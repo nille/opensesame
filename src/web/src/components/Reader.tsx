@@ -16,6 +16,7 @@ import {
   senderDisplay,
 } from "../lib/format.ts";
 import { useKeyboard } from "../hooks/useKeyboard.ts";
+import { StarButton } from "./Star.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -30,6 +31,12 @@ interface ReaderProps {
   // the composer is up — we don't want the stack moving under the operator
   // while they're typing a reply.
   keyboardEnabled: boolean;
+  // Slice 8.10. The star indicator and toggle handler match the inbox-row
+  // affordance — App resolves filled/pending from its intent map keyed by
+  // rootKey, so the two surfaces stay in lockstep.
+  starFilled: boolean;
+  starPending: boolean;
+  onToggleStar: (rootKey: string, next: boolean) => void;
 }
 
 // Slice 8.6: the reader pane renders the whole conversation. Subject sits at
@@ -42,7 +49,15 @@ interface ReaderProps {
 // Switching threads remounts this component (App passes key={rootKey}); the
 // `expanded` set is re-seeded with the latest's id on every fresh mount.
 
-export function Reader({ thread, onReply, onReplyTo, keyboardEnabled }: ReaderProps): JSX.Element {
+export function Reader({
+  thread,
+  onReply,
+  onReplyTo,
+  keyboardEnabled,
+  starFilled,
+  starPending,
+  onToggleStar,
+}: ReaderProps): JSX.Element {
   if (thread === null) {
     return (
       <section className="reader reader--empty">
@@ -78,6 +93,9 @@ export function Reader({ thread, onReply, onReplyTo, keyboardEnabled }: ReaderPr
       onReply={onReply}
       onReplyTo={onReplyTo}
       keyboardEnabled={keyboardEnabled}
+      starFilled={starFilled}
+      starPending={starPending}
+      onToggleStar={onToggleStar}
     />
   );
 }
@@ -88,6 +106,9 @@ interface ThreadReaderProps {
   onReply: () => void;
   onReplyTo: (messageId: string) => void;
   keyboardEnabled: boolean;
+  starFilled: boolean;
+  starPending: boolean;
+  onToggleStar: (rootKey: string, next: boolean) => void;
 }
 
 function ThreadReader({
@@ -96,6 +117,9 @@ function ThreadReader({
   onReply,
   onReplyTo,
   keyboardEnabled,
+  starFilled,
+  starPending,
+  onToggleStar,
 }: ThreadReaderProps): JSX.Element {
   // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
   // (rootKey starts with "<"), fetch the full thread via list_thread_messages
@@ -177,10 +201,24 @@ function ThreadReader({
     keyboardEnabled,
   );
 
+  // The header star matches the gutter affordance — App resolves
+  // filled/pending. Disabled for legacy threads (no server thread_id).
+  const starrable = thread.rootKey.startsWith("<");
+
   return (
     <section className="reader">
       <header className="reader__head reader__head--thread">
-        <h1 className="reader__subject">{lead.subject ?? subject}</h1>
+        <div className="reader__subject-row">
+          <h1 className="reader__subject">{lead.subject ?? subject}</h1>
+          <StarButton
+            filled={starFilled}
+            pending={starPending}
+            disabled={!starrable}
+            variant="header"
+            size={18}
+            onToggle={(next) => onToggleStar(thread.rootKey, next)}
+          />
+        </div>
         <div className="reader__threadmeta mono faint">
           {rows.length + thread.failedRows.length}{" "}
           {rows.length + thread.failedRows.length === 1

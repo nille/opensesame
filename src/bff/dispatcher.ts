@@ -41,6 +41,7 @@ import {
   parseReplyToEmailInput,
   parseSearchEmailInput,
   parseSendEmailInput,
+  parseStarThreadInput,
   type ParseError,
   type SendEmailInput,
 } from "./schemas.js";
@@ -106,6 +107,8 @@ export async function dispatch(
       return handleReplyToEmail(deps, body);
     case "list_thread_messages":
       return handleListThreadMessages(deps, body);
+    case "star_thread":
+      return handleStarThread(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -429,6 +432,24 @@ async function handleListThreadMessages(
 
   try {
     const result = await deps.reader.listThreadMessages(input);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0028 (slice 8.10). Star is a 200 in every non-malformed-input case
+// — empty thread (no rows on ThreadIdGSI) returns updated_count: 0 rather
+// than 404 so a stale inbox-window rollup doesn't surface as an error.
+async function handleStarThread(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseStarThreadInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  try {
+    const result = await deps.reader.starThread(parsed.value, new Date());
     return ok(result);
   } catch (err) {
     return internalError(err);

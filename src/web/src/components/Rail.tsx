@@ -2,7 +2,7 @@ import type { ChangeEvent, JSX, KeyboardEvent, Ref } from "react";
 import type { Theme } from "../hooks/useTheme.ts";
 import { formatPolledAt } from "../lib/format.ts";
 
-export type RailView = "inbox" | "sent";
+export type RailView = "inbox" | "sent" | "starred";
 
 interface RailProps {
   mailbox: string;
@@ -15,6 +15,10 @@ interface RailProps {
   onChangeView: (view: RailView) => void;
   inboxCount: number;
   sentCount: number;
+  // ADR-0028 (slice 8.10): count of threads with any starred row in the
+  // currently-loaded inbox window. Hidden when zero — the entry is a
+  // recall affordance, not a feature advert.
+  starredCount: number;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchInputRef?: Ref<HTMLInputElement>;
@@ -38,6 +42,7 @@ export function Rail({
   onChangeView,
   inboxCount,
   sentCount,
+  starredCount,
   searchQuery,
   onSearchChange,
   searchInputRef,
@@ -50,7 +55,9 @@ export function Rail({
     ? "~/search"
     : view === "inbox"
       ? "~/inbox"
-      : "~/sent";
+      : view === "starred"
+        ? "~/starred"
+        : "~/sent";
   return (
     <aside className="rail">
       <div className="rail__head">
@@ -127,6 +134,19 @@ export function Rail({
         >
           <span>inbox</span>
           <span className="mono faint">{inboxCount}</span>
+        </button>
+        <button
+          type="button"
+          className={
+            "rail__navitem" +
+            (view === "starred" ? " rail__navitem--active" : "")
+          }
+          onClick={() => onChangeView("starred")}
+        >
+          <span>starred</span>
+          <span className="mono faint">
+            {starredCount === 0 ? "—" : starredCount}
+          </span>
         </button>
         <button
           type="button"

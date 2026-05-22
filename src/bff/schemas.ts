@@ -483,6 +483,40 @@ export function parseListThreadMessagesInput(
   return ok(out);
 }
 
+// ---- star_thread (ADR-0028) ----
+//
+// Toggle the star annotation on every row in a thread. The dispatcher
+// fans out per-row UpdateItems via ThreadIdGSI; the input is just the
+// thread identity and the desired state.
+
+export type StarThreadInput = {
+  thread_id: string;
+  starred: boolean;
+};
+
+export function parseStarThreadInput(
+  body: unknown,
+): ParseResult<StarThreadInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  if (obj["starred"] === undefined) {
+    return fail("starred", "missing", "starred is required");
+  }
+  if (typeof obj["starred"] !== "boolean") {
+    return fail("starred", "invalid_type", "starred must be a boolean");
+  }
+
+  return ok({ thread_id: threadId, starred: obj["starred"] });
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

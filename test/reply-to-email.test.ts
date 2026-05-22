@@ -36,6 +36,7 @@ function makeParent(over: Partial<ReadMessageOk> = {}): ReadMessageOk {
     attachments: [],
     read_at: null,
     thread_id: null,
+    starred_at: null,
   };
   return {
     ...base,

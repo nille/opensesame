@@ -5,6 +5,7 @@ import {
   senderDisplay,
   shortMessageId,
 } from "../lib/format.ts";
+import { StarButton } from "./Star.tsx";
 
 interface InboxListProps {
   threads: Thread[];
@@ -13,6 +14,13 @@ interface InboxListProps {
   loading: boolean;
   offline: boolean;
   searchActive?: boolean;
+  // Slice 8.10 (ADR-0028). Optimistic-pending intent map keyed by rootKey.
+  // When a row's rootKey is in the map, the value (true|false) is the
+  // operator's intended next state and renders as if the toggle has
+  // already succeeded; the row's true `starred` returns to authority once
+  // the next inbox poll lands and the entry is dropped from the map.
+  pendingStars: Map<string, boolean>;
+  onToggleStar: (rootKey: string, next: boolean) => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -26,6 +34,8 @@ export function InboxList({
   loading,
   offline,
   searchActive = false,
+  pendingStars,
+  onToggleStar,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -106,6 +116,13 @@ export function InboxList({
         const senderLine = renderSenders(thread.senders);
         const messageIdExcerpt = shortMessageId(lead.message_id, 14);
         const showSentChip = lead.direction === "out";
+        // Star can only be toggled on threads with a server-stamped thread_id
+        // (rootKey starts with "<" — same gate as ThreadReader expansion).
+        // Subject-fallback rollups have no stable handle to address an
+        // UpdateItem fan-out against.
+        const starrable = thread.rootKey.startsWith("<");
+        const pending = pendingStars.get(thread.rootKey);
+        const filled = pending ?? thread.starred;
 
         return (
           <div
@@ -118,8 +135,27 @@ export function InboxList({
             role="button"
             tabIndex={-1}
           >
-            <div className="inbox-row__gutter">
-              {thread.unread ? <span className="inbox-row__dot" /> : null}
+            <div
+              className={
+                "inbox-row__gutter" +
+                (filled ? " inbox-row__gutter--starred" : "") +
+                (thread.unread && !filled ? " inbox-row__gutter--unread" : "")
+              }
+            >
+              {/* Filled star always renders. Unstarred star renders too —
+                  CSS hides it unless the row is hovered or the thread is
+                  unread (so the dot can swap to a star on hover). */}
+              {thread.unread && !filled ? (
+                <span className="inbox-row__dot" aria-hidden />
+              ) : null}
+              <StarButton
+                filled={filled}
+                pending={pending !== undefined}
+                disabled={!starrable}
+                variant="gutter"
+                stopPropagation
+                onToggle={(next) => onToggleStar(thread.rootKey, next)}
+              />
             </div>
             <div className="inbox-row__main">
               <div className="inbox-row__top">

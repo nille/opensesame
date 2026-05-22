@@ -40,6 +40,7 @@ function row(
     direction: "in",
     read_at: "2026-05-21T00:00:00.000Z",
     thread_id: null,
+    starred_at: null,
     ...partial,
   };
 }
@@ -476,6 +477,112 @@ describe("groupIntoThreads", () => {
     const out = groupIntoThreads(rows);
     expect(out).toHaveLength(1);
     expect(out[0]!.rootKey).toBe("<root@example.com>");
+  });
+
+  // ADR-0028 (slice 8.10). Thread.starred is per-row OR — any row with a
+  // non-null starred_at marks the thread as starred. The aggregation has
+  // to be defensive against partial states (mid-flight star_thread fanout
+  // where one row was rejected by the conditional check) and against
+  // direction (an outbound row can carry a starred_at, since the operator
+  // may have starred the thread after replying).
+  describe("Thread.starred aggregation (ADR-0028 / slice 8.10)", () => {
+    it("returns false when no row carries starred_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+        }),
+      ];
+      const out = groupIntoThreads(rows);
+      expect(out[0]!.starred).toBe(false);
+    });
+
+    it("returns true when any row carries starred_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          starred_at: null,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          starred_at: "2026-05-22T09:00:00.000Z",
+        }),
+      ];
+      const out = groupIntoThreads(rows);
+      expect(out[0]!.starred).toBe(true);
+    });
+
+    it("counts an outbound row's starred_at toward the thread state", () => {
+      // The operator can star a thread after sending a reply — the
+      // outbound row carries the timestamp and it should still flip the
+      // thread's chip.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          direction: "in",
+          starred_at: null,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<myreply@example.com>",
+          references: "<root@example.com>",
+          direction: "out",
+          starred_at: "2026-05-22T09:00:00.000Z",
+        }),
+      ];
+      const out = groupIntoThreads(rows);
+      expect(out[0]!.starred).toBe(true);
+      expect(out[0]!.hasOutbound).toBe(true);
+    });
+
+    it("treats parse-failed singletons as unstarred (no starred_at to read)", () => {
+      // Skeleton rows never carry starred_at; their thread must report
+      // false so the Starred view doesn't surface failed parses.
+      const rows: InboxRow[] = [
+        failed("01H0000000000000000000A", "2026-05-20T10:00:00.000Z"),
+      ];
+      const out = groupIntoThreads(rows);
+      expect(out).toHaveLength(1);
+      expect(out[0]!.starred).toBe(false);
+    });
+
+    it("survives a partial-fanout state where only some rows carry starred_at", () => {
+      // After star_thread, in the rare case where one row's conditional
+      // check failed (race with a delete), the thread still reads as
+      // starred — operator intent is at the thread level.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          starred_at: "2026-05-22T09:00:00.000Z",
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          starred_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows);
+      expect(out[0]!.starred).toBe(true);
+    });
   });
 });
 

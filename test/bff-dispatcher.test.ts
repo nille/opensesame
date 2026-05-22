@@ -33,6 +33,7 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       markReadByPrimaryKey: vi.fn(noop),
       searchEmail: vi.fn(noop),
       listThreadMessages: vi.fn(noop),
+      starThread: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -75,6 +76,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -102,6 +104,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -138,6 +141,7 @@ describe("dispatch", () => {
       attachments: [],
       read_at: null,
       thread_id: null,
+      starred_at: null,
     };
     const deps = makeDeps({
       reader: {
@@ -148,6 +152,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -237,6 +242,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -258,6 +264,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -308,6 +315,7 @@ describe("dispatch", () => {
       ],
       read_at: null,
       thread_id: null,
+      starred_at: null,
     };
     const presign = vi.fn();
     const deps: BffDeps = {
@@ -320,6 +328,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -353,6 +362,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -409,6 +419,7 @@ describe("dispatch", () => {
       ],
       read_at: null,
       thread_id: null,
+      starred_at: null,
     };
     const presign = vi.fn(async () => ({
       url: "https://s3.example.com/signed-url",
@@ -424,6 +435,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -470,6 +482,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -494,6 +507,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -521,6 +535,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -549,6 +564,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey,
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -581,6 +597,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey,
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -645,6 +662,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail,
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/search_email", {
@@ -696,6 +714,7 @@ describe("dispatch", () => {
       attachments: [],
       read_at: null,
       thread_id: null,
+      starred_at: null,
       ...over,
     };
   }
@@ -733,6 +752,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -763,6 +783,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -790,6 +811,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -823,6 +845,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       sendEmail,
     });
@@ -868,6 +891,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
       },
       sendEmail,
     });
@@ -918,6 +942,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages,
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -947,6 +972,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages,
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -975,6 +1001,7 @@ describe("dispatch", () => {
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
         listThreadMessages,
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1003,10 +1030,132 @@ describe("dispatch", () => {
         listThreadMessages: vi.fn(async () => {
           throw new Error("ddb boom");
         }),
+        starThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
       thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+describe("dispatch /rpc/star_thread (ADR-0028)", () => {
+  it("star_thread: 400 when thread_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/star_thread", { starred: true });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "thread_id",
+    });
+  });
+
+  it("star_thread: 400 when starred is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/star_thread", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "starred",
+    });
+  });
+
+  it("star_thread: 400 when starred is not a boolean", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/star_thread", {
+      thread_id: "<root@example.com>",
+      starred: "yes",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "starred",
+    });
+  });
+
+  it("star_thread: 200 — forwards parsed input and echoes the reader result", async () => {
+    const starThread = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      starred: true,
+      starred_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 3,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/star_thread", {
+      thread_id: "<root@example.com>",
+      starred: true,
+    });
+    expect(r.status).toBe(200);
+    expect(starThread).toHaveBeenCalledTimes(1);
+    expect(starThread).toHaveBeenCalledWith(
+      { thread_id: "<root@example.com>", starred: true },
+      expect.any(Date),
+    );
+    expect(r.body).toEqual({
+      thread_id: "<root@example.com>",
+      starred: true,
+      starred_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 3,
+    });
+  });
+
+  it("star_thread: 200 with updated_count 0 for an empty thread (no row → no-op, not 404)", async () => {
+    const starThread = vi.fn(async () => ({
+      thread_id: "<orphan@example.com>",
+      starred: true,
+      starred_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 0,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/star_thread", {
+      thread_id: "<orphan@example.com>",
+      starred: true,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ updated_count: 0 });
+  });
+
+  it("star_thread: 500 when the reader throws", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(async () => {
+          throw new Error("ddb boom");
+        }),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/star_thread", {
+      thread_id: "<root@example.com>",
+      starred: true,
     });
     expect(r.status).toBe(500);
     expect(r.body).toMatchObject({ code: "internal_error" });

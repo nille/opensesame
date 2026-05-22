@@ -125,6 +125,10 @@ export type InboxRowOk = {
   // written before slice 8.8 or when the parse was too sparse to derive one;
   // groupIntoThreads falls back to JWZ-style key resolution in that case.
   thread_id: string | null;
+  // ADR-0028 (slice 8.10): per-row sparse star annotation. null on rows
+  // written before this slice or never starred. groupIntoThreads aggregates
+  // any starred row → starred thread.
+  starred_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -162,6 +166,21 @@ export type SearchEmailResult = ListInboxResult;
 // read_inbox / search_email. The reader stack expansion calls this on thread
 // open and merges the result with the in-window rows.
 export type ListThreadMessagesResult = ListInboxResult;
+
+// ADR-0028 (slice 8.10): toggle the star annotation on every row in the
+// thread. updated_count is the number of rows actually written; an empty
+// thread (no rows on ThreadIdGSI) returns 0 rather than 404.
+export type StarThreadInput = {
+  thread_id: string;
+  starred: boolean;
+};
+
+export type StarThreadResult = {
+  thread_id: string;
+  starred: boolean;
+  starred_at: string | null;
+  updated_count: number;
+};
 
 export type ReadMessageHeaders = {
   from: string | null;
@@ -202,6 +221,8 @@ export type ReadMessageOk = {
   // ADR-0026 (slice 8.8): server-stamped thread root, or null on legacy /
   // unparseable rows.
   thread_id: string | null;
+  // ADR-0028 (slice 8.10): per-row sparse star annotation.
+  starred_at: string | null;
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -295,6 +316,9 @@ export const bff = {
     cursor?: string;
   }): Promise<RpcResult<ListThreadMessagesResult>> {
     return call<ListThreadMessagesResult>("list_thread_messages", input);
+  },
+  starThread(input: StarThreadInput): Promise<RpcResult<StarThreadResult>> {
+    return call<StarThreadResult>("star_thread", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

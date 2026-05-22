@@ -7,7 +7,7 @@ import {
   type JSX,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   bff,
   type InboxRow,
@@ -43,10 +43,11 @@ type PaneState =
       replyParentId: string | null;
     };
 
-type View = "inbox" | "sent";
+type View = "inbox" | "sent" | "starred";
 
 export function App(): JSX.Element {
   const { theme, toggle } = useTheme();
+  const queryClient = useQueryClient();
   const [view, setView] = useState<View>("inbox");
   const [pane, setPane] = useState<PaneState>({ mode: "reader" });
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -55,6 +56,12 @@ export function App(): JSX.Element {
   const debouncedQuery = useDebounced(searchQuery.trim(), 220);
   const searchActive = debouncedQuery.length > 0;
   const searchInputRef = useRef<HTMLInputElement>(null);
+  // ADR-0028 (slice 8.10). Optimistic-pending star intent map keyed by
+  // Thread.rootKey. Set on toggle, cleared when the next inbox poll
+  // surfaces the new authoritative starred_at (or rolled back on error).
+  const [pendingStars, setPendingStars] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", MAILBOX],
@@ -115,6 +122,21 @@ export function App(): JSX.Element {
     [allThreads],
   );
 
+  // ADR-0028 (slice 8.10). Threads visible to the operator with at least
+  // one starred row, or an outstanding pending-star intent. Including
+  // pending entries means the row stays in the Starred view during the
+  // optimistic flicker — without it, an operator who toggles from the
+  // Starred view watches the row vanish before the RPC has even returned.
+  const starredThreads = useMemo(
+    () =>
+      allThreads.filter((t) => {
+        const pending = pendingStars.get(t.rootKey);
+        if (pending !== undefined) return pending;
+        return t.starred;
+      }),
+    [allThreads, pendingStars],
+  );
+
   const searchThreads = useMemo<Thread[]>(
     () => groupIntoThreads(searchMessages),
     [searchMessages],
@@ -124,7 +146,9 @@ export function App(): JSX.Element {
     ? searchThreads
     : view === "inbox"
       ? inboxThreads
-      : sentThreads;
+      : view === "starred"
+        ? starredThreads
+        : sentThreads;
 
   // Rail counts stay as message counts (per ADR-0023): triage volume is
   // what the operator wants to see, not conversation count.
@@ -142,6 +166,10 @@ export function App(): JSX.Element {
       ).length,
     [allMessages],
   );
+  // Rail counter for the Starred entry — distinct threads, not messages.
+  // The Starred view's primary unit is the conversation, and the count
+  // doubles as a calm "how many am I tracking" cue.
+  const starredThreadCount = starredThreads.length;
 
   // Kept around for the search-loading skeleton check.
   const messages = searchActive ? searchMessages : allMessages;
@@ -216,6 +244,53 @@ export function App(): JSX.Element {
     setPane({ mode: "composer", seed: null, replyParentId: messageId });
   }, []);
 
+  // ADR-0028 (slice 8.10). Toggle the star on every row in the thread.
+  // Optimistic write: stamp the intent map immediately, fire star_thread,
+  // then either drop the entry on success (the next inbox poll surfaces
+  // the authoritative starred_at) or roll back on failure. The map keys
+  // by Thread.rootKey, which equals the server's thread_id for any
+  // server-stamped thread (the only ones we let the operator star).
+  const toggleStar = useCallback(
+    (rootKey: string, next: boolean): void => {
+      // Subject-fallback rollups (no `<…>` rootKey) are gated upstream by
+      // StarButton.disabled, but defend here too so a future caller doesn't
+      // accidentally fire UpdateItems against a synthetic key.
+      if (!rootKey.startsWith("<")) return;
+      setPendingStars((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, next);
+        return m;
+      });
+      void bff
+        .starThread({ thread_id: rootKey, starred: next })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            // Roll back the optimistic state and drop the intent so the row
+            // returns to whatever the last inbox poll said.
+            setPendingStars((prev) => {
+              const m = new Map(prev);
+              m.delete(rootKey);
+              return m;
+            });
+            return;
+          }
+          // Success path: invalidate the inbox query so the next poll
+          // surfaces the new starred_at on every row, then drop the
+          // intent. We deliberately don't optimistically write the new
+          // starred_at into the cached rows — keeping the intent map
+          // separate from the row cache means a stale poll can't quietly
+          // overwrite a fresh toggle.
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          setPendingStars((prev) => {
+            const m = new Map(prev);
+            m.delete(rootKey);
+            return m;
+          });
+        });
+    },
+    [queryClient],
+  );
+
   // Resolve the parent for reply mode. Reuses the same ["message", id] cache
   // entry that the Reader populated, so this is a free hit in the common case.
   const replyParentId =
@@ -263,6 +338,18 @@ export function App(): JSX.Element {
         } else if (e.key === "r") {
           e.preventDefault();
           replyToCurrent();
+        } else if (e.key === "s") {
+          // Slice 8.10. Toggle the selected thread's star. Disabled for
+          // legacy / subject-fallback rollups (rootKey doesn't start with
+          // "<") — we silently swallow the keypress in that case rather
+          // than firing a UpdateItem fan-out against a synthetic key.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          const pending = pendingStars.get(t.rootKey);
+          const current = pending ?? t.starred;
+          toggleStar(t.rootKey, !current);
         } else if (e.key === "/") {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -276,6 +363,7 @@ export function App(): JSX.Element {
               "enter    open message (auto-opened in reader)",
               "/        focus search",
               "r        reply to latest in thread",
+              "s        star / unstar selected thread",
               "c        compose new",
               "t        toggle theme",
               "esc      close composer / clear search",
@@ -287,7 +375,16 @@ export function App(): JSX.Element {
           toggle();
         }
       },
-      [pane, threads.length, openCompose, replyToCurrent, toggle],
+      [
+        pane,
+        threads,
+        selectedIdx,
+        pendingStars,
+        toggleStar,
+        openCompose,
+        replyToCurrent,
+        toggle,
+      ],
     ),
     pane.mode !== "composer",
   );
@@ -315,6 +412,7 @@ export function App(): JSX.Element {
         onChangeView={switchView}
         inboxCount={inboxMessageCount}
         sentCount={sentMessageCount}
+        starredCount={starredThreadCount}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
@@ -333,18 +431,33 @@ export function App(): JSX.Element {
         }
         offline={offline}
         searchActive={searchActive}
+        pendingStars={pendingStars}
+        onToggleStar={toggleStar}
       />
       {pane.mode === "reader" ? (
-        <Reader
-          // key remounts the Reader on thread change so the in-card
-          // expansion set (slice 8.6) starts fresh — otherwise rows from
-          // the previous thread bleed into the new one's stack.
-          key={threads[selectedIdx]?.rootKey ?? "empty"}
-          thread={threads[selectedIdx] ?? null}
-          onReply={replyToCurrent}
-          onReplyTo={replyToMessage}
-          keyboardEnabled={pane.mode === "reader"}
-        />
+        (() => {
+          // Resolve the star indicator state for the selected thread once,
+          // mirroring the inbox-row logic so the gutter and reader header
+          // never disagree mid-flight.
+          const t = threads[selectedIdx] ?? null;
+          const pending = t === null ? undefined : pendingStars.get(t.rootKey);
+          const filled = t === null ? false : (pending ?? t.starred);
+          return (
+            <Reader
+              // key remounts the Reader on thread change so the in-card
+              // expansion set (slice 8.6) starts fresh — otherwise rows from
+              // the previous thread bleed into the new one's stack.
+              key={t?.rootKey ?? "empty"}
+              thread={t}
+              onReply={replyToCurrent}
+              onReplyTo={replyToMessage}
+              keyboardEnabled={pane.mode === "reader"}
+              starFilled={filled}
+              starPending={pending !== undefined}
+              onToggleStar={toggleStar}
+            />
+          );
+        })()
       ) : pane.replyParentId !== null && replyParent === null ? (
         <section className="composer">
           <header className="composer__head">
