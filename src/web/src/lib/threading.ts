@@ -59,6 +59,11 @@ export interface Thread {
   // and the thread auto-resurfaces in the inbox. A skeleton-only thread
   // is never trashed (rows.length === 0 → false).
   trashed: boolean;
+  // ADR-0034 (slice 8.16): true iff every parsed row carries an
+  // `archived_at` timestamp. Same every-row aggregation as trash;
+  // wake-on-reply behavior is identical. Independent from `trashed` —
+  // a thread can be archived without being trashed and vice versa.
+  archived: boolean;
   // rows.length + failedRows.length. >1 means render the count chip.
   count: number;
 }
@@ -105,6 +110,7 @@ export function groupIntoThreads(
       snoozed: false,
       snoozedUntil: null,
       trashed: false,
+      archived: false,
       count: 1,
     };
     buckets.set(key, t);
@@ -119,6 +125,7 @@ export function groupIntoThreads(
   for (const t of threads) {
     annotateSnooze(t, nowMs);
     annotateTrash(t);
+    annotateArchive(t);
   }
   // Sort newest-first by the thread's most-recent message.
   threads.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
@@ -181,6 +188,24 @@ function annotateTrash(t: Thread): void {
   t.trashed = true;
 }
 
+// archived iff every parsed row carries `archived_at`. Same every-row
+// predicate as trash; identical wake-on-reply behavior. Independent from
+// trash — both attributes can coexist on a row, though the operator
+// rarely sets both.
+function annotateArchive(t: Thread): void {
+  if (t.rows.length === 0) {
+    t.archived = false;
+    return;
+  }
+  for (const r of t.rows) {
+    if (r.archived_at === null) {
+      t.archived = false;
+      return;
+    }
+  }
+  t.archived = true;
+}
+
 function upsert(
   buckets: Map<string, Thread>,
   key: string,
@@ -200,6 +225,7 @@ function upsert(
       snoozed: false,
       snoozedUntil: null,
       trashed: false,
+      archived: false,
       count: 0,
     };
     buckets.set(key, t);

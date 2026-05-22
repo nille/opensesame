@@ -123,6 +123,9 @@ export function SnoozeButton({
     (disabled ? " snooze--disabled" : "") +
     (open ? " snooze--open" : "");
 
+  const tip = disabled ? label : filled ? "Snoozed (z)" : "Snooze (z)";
+  const isGutter = variant === "gutter";
+
   return (
     <span ref={wrapRef} className="snooze-wrap">
       <button
@@ -133,13 +136,8 @@ export function SnoozeButton({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label={label}
-        title={
-          disabled
-            ? label
-            : filled
-              ? "Snoozed (z)"
-              : "Snooze (z)"
-        }
+        title={isGutter ? undefined : tip}
+        data-tooltip={isGutter && !open ? tip : undefined}
         disabled={disabled}
       >
         <ClockIcon filled={filled} size={size} />

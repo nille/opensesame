@@ -20,6 +20,7 @@ import { useKeyboard } from "../hooks/useKeyboard.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
+import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
 
 interface ReaderProps {
@@ -56,6 +57,11 @@ interface ReaderProps {
   trashFilled: boolean;
   trashPending: boolean;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  // Slice 8.16 (ADR-0034). Archive mirrors trash — independent attribute,
+  // same pending posture, distinct icon (tray + downward-arrow vs lid).
+  archiveFilled: boolean;
+  archivePending: boolean;
+  onToggleArchive: (rootKey: string, next: boolean) => void;
   // Slice 8.13. Read/unread toggle. App resolves `unread` from the thread's
   // server-aggregated state, with the pending intent map winning during
   // optimistic flips. Disabled mirrors trash + an additional gate in App
@@ -91,6 +97,9 @@ export function Reader({
   trashFilled,
   trashPending,
   onToggleTrash,
+  archiveFilled,
+  archivePending,
+  onToggleArchive,
   unread,
   readPending,
   onToggleRead,
@@ -141,6 +150,9 @@ export function Reader({
       trashFilled={trashFilled}
       trashPending={trashPending}
       onToggleTrash={onToggleTrash}
+      archiveFilled={archiveFilled}
+      archivePending={archivePending}
+      onToggleArchive={onToggleArchive}
       unread={unread}
       readPending={readPending}
       onToggleRead={onToggleRead}
@@ -165,6 +177,9 @@ interface ThreadReaderProps {
   trashFilled: boolean;
   trashPending: boolean;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  archiveFilled: boolean;
+  archivePending: boolean;
+  onToggleArchive: (rootKey: string, next: boolean) => void;
   unread: boolean;
   readPending: boolean;
   onToggleRead: (rootKey: string, next: boolean) => void;
@@ -187,6 +202,9 @@ function ThreadReader({
   trashFilled,
   trashPending,
   onToggleTrash,
+  archiveFilled,
+  archivePending,
+  onToggleArchive,
   unread,
   readPending,
   onToggleRead,
@@ -306,6 +324,14 @@ function ThreadReader({
             size={18}
             onToggle={(next) => onToggleTrash(thread.rootKey, next)}
           />
+          <ArchiveButton
+            filled={archiveFilled}
+            pending={archivePending}
+            disabled={!threadable}
+            variant="header"
+            size={18}
+            onToggle={(next) => onToggleArchive(thread.rootKey, next)}
+          />
           <MarkReadButton
             unread={unread}
             pending={readPending}
@@ -325,6 +351,7 @@ function ThreadReader({
             ? " · snoozed until " + formatSnoozedUntil(snoozedUntil)
             : ""}
           {trashFilled ? " · trashed" : ""}
+          {archiveFilled && !trashFilled ? " · archived" : ""}
           {unread ? " · unread" : ""}
         </div>
       </header>

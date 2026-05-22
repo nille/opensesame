@@ -59,6 +59,12 @@ export function MarkReadButton({
     (unread ? " markread--unread" : " markread--read") +
     (pending ? " markread--pending" : "") +
     (disabled ? " markread--disabled" : "");
+  const tip = disabled
+    ? label
+    : unread
+      ? "Mark read (Shift+U)"
+      : "Mark unread (Shift+U)";
+  const isGutter = variant === "gutter";
   return (
     <button
       type="button"
@@ -66,13 +72,8 @@ export function MarkReadButton({
       onClick={handleClick}
       aria-pressed={!unread}
       aria-label={label}
-      title={
-        disabled
-          ? label
-          : unread
-            ? "Mark read (Shift+U)"
-            : "Mark unread (Shift+U)"
-      }
+      title={isGutter ? undefined : tip}
+      data-tooltip={isGutter ? tip : undefined}
       disabled={disabled}
     >
       <EnvelopeIcon unread={unread} size={size} />

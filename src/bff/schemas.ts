@@ -654,6 +654,40 @@ export function parseMarkThreadReadInput(
   return ok({ thread_id: threadId, read: obj["read"] });
 }
 
+// ---- archive_thread (ADR-0034) ----
+//
+// Toggle the archive annotation on every row in a thread. Wire shape is
+// identical to trash (boolean toggle). The fan-out lives in the reader;
+// the schema only validates wire shape.
+
+export type ArchiveThreadInput = {
+  thread_id: string;
+  archived: boolean;
+};
+
+export function parseArchiveThreadInput(
+  body: unknown,
+): ParseResult<ArchiveThreadInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  if (obj["archived"] === undefined) {
+    return fail("archived", "missing", "archived is required");
+  }
+  if (typeof obj["archived"] !== "boolean") {
+    return fail("archived", "invalid_type", "archived must be a boolean");
+  }
+
+  return ok({ thread_id: threadId, archived: obj["archived"] });
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

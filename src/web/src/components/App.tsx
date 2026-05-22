@@ -45,7 +45,7 @@ type PaneState =
       replyParentId: string | null;
     };
 
-type View = "inbox" | "sent" | "starred" | "snoozed" | "trashed";
+type View = "inbox" | "sent" | "starred" | "snoozed" | "trashed" | "archived";
 
 export function App(): JSX.Element {
   const { theme, toggle } = useTheme();
@@ -83,6 +83,13 @@ export function App(): JSX.Element {
   // the thread read, `false` means just marked unread. Cleared on next
   // inbox poll (server-authoritative) or rolled back on RPC error.
   const [pendingReads, setPendingReads] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
+  // ADR-0034 (slice 8.16). Optimistic-pending archive intent map; mirrors
+  // pendingTrashes (boolean toggle, server-authoritative resolves on the
+  // next inbox poll). Archive is independent from trash — a row can be
+  // archived without being trashed and vice versa.
+  const [pendingArchives, setPendingArchives] = useState<Map<string, boolean>>(
     () => new Map(),
   );
   // The reader-header snooze picker is controlled so the global `z` shortcut
@@ -177,6 +184,19 @@ export function App(): JSX.Element {
     [pendingTrashes],
   );
 
+  // ADR-0034 (slice 8.16). Same posture as isTrashedNow but for archive —
+  // hide archived threads from inbox/starred/snoozed/sent the moment the
+  // operator hits `e`, surface them in the Archive view instantly, and
+  // wake-on-reply restores them via the server clearing archived_at.
+  const isArchivedNow = useCallback(
+    (t: Thread): boolean => {
+      const pending = pendingArchives.get(t.rootKey);
+      if (pending !== undefined) return pending;
+      return t.archived;
+    },
+    [pendingArchives],
+  );
+
   const inboxThreads = useMemo(
     () =>
       allThreads.filter(
@@ -184,14 +204,18 @@ export function App(): JSX.Element {
           (t.failedRows.length > 0 ||
             t.rows.some((r) => r.direction === "in")) &&
           !isSnoozedNow(t) &&
-          !isTrashedNow(t),
+          !isTrashedNow(t) &&
+          !isArchivedNow(t),
       ),
-    [allThreads, isSnoozedNow, isTrashedNow],
+    [allThreads, isSnoozedNow, isTrashedNow, isArchivedNow],
   );
 
   const sentThreads = useMemo(
-    () => allThreads.filter((t) => t.hasOutbound && !isTrashedNow(t)),
-    [allThreads, isTrashedNow],
+    () =>
+      allThreads.filter(
+        (t) => t.hasOutbound && !isTrashedNow(t) && !isArchivedNow(t),
+      ),
+    [allThreads, isTrashedNow, isArchivedNow],
   );
 
   // ADR-0028 (slice 8.10). Threads visible to the operator with at least
@@ -203,11 +227,12 @@ export function App(): JSX.Element {
     () =>
       allThreads.filter((t) => {
         if (isTrashedNow(t)) return false;
+        if (isArchivedNow(t)) return false;
         const pending = pendingStars.get(t.rootKey);
         if (pending !== undefined) return pending;
         return t.starred;
       }),
-    [allThreads, pendingStars, isTrashedNow],
+    [allThreads, pendingStars, isTrashedNow, isArchivedNow],
   );
 
   const searchThreads = useMemo<Thread[]>(
@@ -221,7 +246,7 @@ export function App(): JSX.Element {
   // freshly-snoozed thread joins the list in real time.
   const snoozedThreads = useMemo<Thread[]>(() => {
     const list = allThreads.filter(
-      (t) => isSnoozedNow(t) && !isTrashedNow(t),
+      (t) => isSnoozedNow(t) && !isTrashedNow(t) && !isArchivedNow(t),
     );
     return list.slice().sort((a, b) => {
       const aPending = pendingSnoozes.get(a.rootKey);
@@ -230,7 +255,7 @@ export function App(): JSX.Element {
       const bUntil = (bPending ?? b.snoozedUntil) ?? "";
       return aUntil.localeCompare(bUntil);
     });
-  }, [allThreads, isSnoozedNow, isTrashedNow, pendingSnoozes]);
+  }, [allThreads, isSnoozedNow, isTrashedNow, isArchivedNow, pendingSnoozes]);
 
   // Trash view: show only the trashed threads, sorted newest-first by
   // most-recent activity (same default as Inbox). Pending-untrash entries
@@ -239,6 +264,17 @@ export function App(): JSX.Element {
   const trashedThreads = useMemo<Thread[]>(
     () => allThreads.filter((t) => isTrashedNow(t)),
     [allThreads, isTrashedNow],
+  );
+
+  // Archive view: parallel of trashedThreads — show only the archived
+  // threads. Independent of trash; an archived thread that is also
+  // trashed shows in Trash, not Archive (trash is the harder gate, and
+  // showing it in both surfaces would let the operator un-archive a row
+  // they meant to keep deleted). The Archive view is the operator's
+  // long-term record; ordering matches Inbox (most-recent activity first).
+  const archivedThreads = useMemo<Thread[]>(
+    () => allThreads.filter((t) => isArchivedNow(t) && !isTrashedNow(t)),
+    [allThreads, isArchivedNow, isTrashedNow],
   );
 
   const threads = searchActive
@@ -251,7 +287,9 @@ export function App(): JSX.Element {
           ? snoozedThreads
           : view === "trashed"
             ? trashedThreads
-            : sentThreads;
+            : view === "archived"
+              ? archivedThreads
+              : sentThreads;
 
   // Rail counts stay as message counts (per ADR-0023): triage volume is
   // what the operator wants to see, not conversation count.
@@ -275,6 +313,7 @@ export function App(): JSX.Element {
   const starredThreadCount = starredThreads.length;
   const snoozedThreadCount = snoozedThreads.length;
   const trashedThreadCount = trashedThreads.length;
+  const archivedThreadCount = archivedThreads.length;
 
   // Kept around for the search-loading skeleton check.
   const messages = searchActive ? searchMessages : allMessages;
@@ -488,6 +527,39 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0034 (slice 8.16). Toggle archive on every row in the thread.
+  // Mirror of toggleTrash; archive is independent from trash, so the
+  // pending map keys don't collide with pendingTrashes.
+  const toggleArchive = useCallback(
+    (rootKey: string, next: boolean): void => {
+      if (!rootKey.startsWith("<")) return;
+      setPendingArchives((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, next);
+        return m;
+      });
+      void bff
+        .archiveThread({ thread_id: rootKey, archived: next })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            setPendingArchives((prev) => {
+              const m = new Map(prev);
+              m.delete(rootKey);
+              return m;
+            });
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          setPendingArchives((prev) => {
+            const m = new Map(prev);
+            m.delete(rootKey);
+            return m;
+          });
+        });
+    },
+    [queryClient],
+  );
+
   // ADR-0031 (slice 8.13). Toggle read/unread on every inbound row in the
   // thread. Mirror of toggleTrash. The map stores the target read state so
   // the optimistic UI can flip the dot/badge before the RPC settles.
@@ -524,23 +596,33 @@ export function App(): JSX.Element {
   // ADR-0032 (slice 8.14). Toggle a thread's membership in the bulk
   // selection set. Plain toggle when `withShift` is false; Shift+click
   // extends an inclusive range from the anchor to the target in the
-  // current `threads` view order. A range select with no anchor falls
-  // back to a plain toggle and stamps the anchor.
+  // current `threads` view order. A Shift+click with no explicit anchor
+  // falls back to the focused-for-reading row (selectedIdx) as the
+  // implicit anchor — so "click row N, shift+click row M" gives range
+  // [N..M] as the operator expects, rather than just {M} in isolation.
   const toggleSelection = useCallback(
     (rootKey: string, withShift: boolean): void => {
-      // Subject-fallback rollups never carry a server thread id and so
-      // can't fan out an UpdateItem. Match the per-thread gate.
       if (!rootKey.startsWith("<")) return;
-      if (withShift && anchorRootKey !== null && anchorRootKey !== rootKey) {
-        const range = computeRange(threads, anchorRootKey, rootKey);
+      // Resolve the effective anchor for this Shift+click: explicit
+      // anchor wins, then the currently-focused-for-reading row's
+      // rootKey, then null (plain toggle).
+      const focusedRootKey = threads[selectedIdx]?.rootKey ?? null;
+      const implicitAnchor =
+        anchorRootKey ??
+        (focusedRootKey && focusedRootKey.startsWith("<")
+          ? focusedRootKey
+          : null);
+      if (withShift && implicitAnchor !== null && implicitAnchor !== rootKey) {
+        const range = computeRange(threads, implicitAnchor, rootKey);
         if (range.length > 0) {
           setSelection((prev) => {
             const next = new Set(prev);
             for (const k of range) next.add(k);
             return next;
           });
-          // Anchor stays at its previous value so successive Shift+clicks
-          // grow / shrink relative to the original click. Matches Gmail.
+          // Stamp the anchor on first range-extend so successive
+          // Shift+clicks grow / shrink relative to the original click.
+          if (anchorRootKey === null) setAnchorRootKey(implicitAnchor);
           return;
         }
       }
@@ -555,7 +637,7 @@ export function App(): JSX.Element {
       });
       setAnchorRootKey(rootKey);
     },
-    [anchorRootKey, threads],
+    [anchorRootKey, threads, selectedIdx],
   );
 
   // ADR-0033 (slice 8.15). Master "select all in view" toggle. Click
@@ -616,6 +698,17 @@ export function App(): JSX.Element {
     }
     return true;
   }, [selection, threads, pendingTrashes]);
+
+  const allSelectedArchived = useMemo<boolean>(() => {
+    if (selection.size === 0) return false;
+    for (const t of threads) {
+      if (!selection.has(t.rootKey)) continue;
+      const pending = pendingArchives.get(t.rootKey);
+      const filled = pending ?? t.archived;
+      if (!filled) return false;
+    }
+    return true;
+  }, [selection, threads, pendingArchives]);
 
   // For mark-read disambiguation: "all read" means every selected thread
   // has zero unread inbound rows. A selection containing only outbound
@@ -759,6 +852,17 @@ export function App(): JSX.Element {
           const pending = pendingTrashes.get(t.rootKey);
           const current = pending ?? t.trashed;
           toggleTrash(t.rootKey, !current);
+        } else if (e.key === "e") {
+          // Slice 8.16 (ADR-0034). Toggle archive on the selected thread.
+          // Gmail's archive shortcut. Same gate as the other annotation
+          // toggles — server-stamped thread ids only.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          const pending = pendingArchives.get(t.rootKey);
+          const current = pending ?? t.archived;
+          toggleArchive(t.rootKey, !current);
         } else if (e.key === "U" && e.shiftKey) {
           // Slice 8.13. Shift+U toggles read/unread on the selected
           // thread (Gmail convention). Plain `u` is reserved for a
@@ -790,6 +894,7 @@ export function App(): JSX.Element {
               "s        star / unstar selected thread",
               "z / Z    snooze (picker) / unsnooze immediately",
               "#        trash / untrash selected thread",
+              "e        archive / unarchive selected thread",
               "Shift+U  mark thread read / unread",
               "x        add / remove focused thread from selection",
               "Shift+x  select / deselect all in view",
@@ -812,10 +917,12 @@ export function App(): JSX.Element {
         pendingSnoozes,
         pendingTrashes,
         pendingReads,
+        pendingArchives,
         toggleStar,
         pickSnooze,
         toggleTrash,
         toggleRead,
+        toggleArchive,
         openCompose,
         replyToCurrent,
         toggle,
@@ -854,6 +961,7 @@ export function App(): JSX.Element {
         starredCount={starredThreadCount}
         snoozedCount={snoozedThreadCount}
         trashedCount={trashedThreadCount}
+        archivedCount={archivedThreadCount}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
@@ -867,6 +975,7 @@ export function App(): JSX.Element {
             count={selection.size}
             allStarred={allSelectedStarred}
             allTrashed={allSelectedTrashed}
+            allArchived={allSelectedArchived}
             allRead={allSelectedRead}
             anyHasInbound={anySelectedHasInbound}
             snoozePickerOpen={bulkSnoozePickerOpen}
@@ -877,6 +986,11 @@ export function App(): JSX.Element {
             }
             onTrashAll={() =>
               bulkApply((rootKey) => toggleTrash(rootKey, !allSelectedTrashed))
+            }
+            onArchiveAll={() =>
+              bulkApply((rootKey) =>
+                toggleArchive(rootKey, !allSelectedArchived),
+              )
             }
             onMarkReadAll={() =>
               bulkApply((rootKey) => toggleRead(rootKey, !allSelectedRead))
@@ -903,11 +1017,14 @@ export function App(): JSX.Element {
           onPickSnooze={pickSnooze}
           pendingTrashes={pendingTrashes}
           onToggleTrash={toggleTrash}
+          pendingArchives={pendingArchives}
+          onToggleArchive={toggleArchive}
           pendingReads={pendingReads}
           onToggleRead={toggleRead}
           selection={selection}
           onToggleSelection={toggleSelection}
           onToggleSelectAll={toggleSelectAll}
+          selectionActive={selection.size > 0}
         />
       </div>
       {pane.mode === "reader" ? (
@@ -930,6 +1047,10 @@ export function App(): JSX.Element {
             t === null ? undefined : pendingTrashes.get(t.rootKey);
           const trashFilled =
             t === null ? false : (trashPending ?? t.trashed);
+          const archivePending =
+            t === null ? undefined : pendingArchives.get(t.rootKey);
+          const archiveFilled =
+            t === null ? false : (archivePending ?? t.archived);
           // Slice 8.13. The map stores the *target* read state, so a pending
           // entry flips the unread bit immediately. Without an entry, fall
           // back to the server-aggregated `unread`.
@@ -962,6 +1083,9 @@ export function App(): JSX.Element {
               trashFilled={trashFilled}
               trashPending={trashPending !== undefined}
               onToggleTrash={toggleTrash}
+              archiveFilled={archiveFilled}
+              archivePending={archivePending !== undefined}
+              onToggleArchive={toggleArchive}
               unread={unread}
               readPending={readPending !== undefined}
               onToggleRead={toggleRead}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseArchiveThreadInput,
   parseGetMessageInput,
   parseMarkThreadReadInput,
   parseReadInboxInput,
@@ -584,5 +585,75 @@ describe("parseMarkThreadReadInput (ADR-0031)", () => {
     expect(parseMarkThreadReadInput(null).ok).toBe(false);
     expect(parseMarkThreadReadInput([]).ok).toBe(false);
     expect(parseMarkThreadReadInput("hello").ok).toBe(false);
+  });
+});
+
+describe("parseArchiveThreadInput (ADR-0034)", () => {
+  it("accepts a valid {thread_id, archived: true} body", () => {
+    const r = parseArchiveThreadInput({
+      thread_id: "<root@example.com>",
+      archived: true,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        thread_id: "<root@example.com>",
+        archived: true,
+      });
+    }
+  });
+
+  it("accepts {archived: false} for un-archiving", () => {
+    const r = parseArchiveThreadInput({
+      thread_id: "<root@example.com>",
+      archived: false,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.archived).toBe(false);
+  });
+
+  it("rejects a missing thread_id", () => {
+    const r = parseArchiveThreadInput({ archived: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty thread_id with code=missing", () => {
+    const r = parseArchiveThreadInput({ thread_id: "", archived: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing archived with code=missing", () => {
+    const r = parseArchiveThreadInput({ thread_id: "<root@example.com>" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("archived");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a non-boolean archived", () => {
+    const r = parseArchiveThreadInput({
+      thread_id: "<root@example.com>",
+      archived: "yes",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("archived");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseArchiveThreadInput(null).ok).toBe(false);
+    expect(parseArchiveThreadInput([]).ok).toBe(false);
+    expect(parseArchiveThreadInput("hello").ok).toBe(false);
   });
 });

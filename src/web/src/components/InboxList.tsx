@@ -9,6 +9,7 @@ import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
+import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
 
 interface InboxListProps {
@@ -34,6 +35,10 @@ interface InboxListProps {
   // pending intent wins over server `trashed` for the icon and chip.
   pendingTrashes: Map<string, boolean>;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  // Slice 8.16 (ADR-0034). Same shape as pendingTrashes; archive is an
+  // independent attribute, so the pending map is its own.
+  pendingArchives: Map<string, boolean>;
+  onToggleArchive: (rootKey: string, next: boolean) => void;
   // Slice 8.13 (ADR-0031). Pending read intent map. The value stored is the
   // *target* read state (true = "marking read", false = "marking unread"),
   // so the unread dot/badge can flip optimistically before the RPC settles.
@@ -51,6 +56,10 @@ interface InboxListProps {
   // header row reads `selection` + `threads` to compute its tri-state
   // visual.
   onToggleSelectAll: () => void;
+  // Selection mode: when at least one thread is bulk-selected, plain
+  // clicks on a row toggle membership instead of opening the reader.
+  // Esc / clear-selection exits the mode and restores click-to-read.
+  selectionActive: boolean;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -70,11 +79,14 @@ export function InboxList({
   onPickSnooze,
   pendingTrashes,
   onToggleTrash,
+  pendingArchives,
+  onToggleArchive,
   pendingReads,
   onToggleRead,
   selection,
   onToggleSelection,
   onToggleSelectAll,
+  selectionActive,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -176,6 +188,9 @@ export function InboxList({
         // Trash: pending intent wins over server state, same posture as star.
         const pendingTrash = pendingTrashes.get(thread.rootKey);
         const trashFilled = pendingTrash ?? thread.trashed;
+        // Archive: independent attribute, same pending pattern as trash.
+        const pendingArchive = pendingArchives.get(thread.rootKey);
+        const archiveFilled = pendingArchive ?? thread.archived;
         // Read: the map stores the *target* read state, so a pending entry
         // flips the unread bit immediately. When the entry is `true` (mark
         // read), the dot disappears; when `false` (mark unread), the dot
@@ -197,85 +212,90 @@ export function InboxList({
               (focused ? " inbox-row--selected" : "") +
               (checked ? " inbox-row--checked" : "")
             }
-            onClick={() => onSelect(idx)}
+            onClick={(e) => {
+              // Selection-mode: once at least one row is selected, plain
+              // clicks toggle membership. Escape / clear-selection exits
+              // the mode and restores click-to-read. Shift+click always
+              // toggles + range-extends regardless of mode.
+              if (e.shiftKey && threadable) {
+                e.preventDefault();
+                onToggleSelection(thread.rootKey, true);
+                return;
+              }
+              if (selectionActive && threadable) {
+                e.preventDefault();
+                onToggleSelection(thread.rootKey, false);
+                return;
+              }
+              onSelect(idx);
+            }}
             role="button"
             tabIndex={-1}
+            aria-pressed={checked}
           >
-            <div
-              className={
-                "inbox-row__gutter" +
-                (filled ? " inbox-row__gutter--starred" : "") +
-                (unreadFilled && !filled ? " inbox-row__gutter--unread" : "")
-              }
-            >
-              <input
-                type="checkbox"
-                className="inbox-row__check"
-                aria-label={
-                  threadable
-                    ? checked
-                      ? "Deselect thread"
-                      : "Select thread"
-                    : "Cannot select thread"
-                }
-                checked={checked}
-                disabled={!threadable}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  if (!threadable) return;
-                  onToggleSelection(thread.rootKey, e.shiftKey);
-                }}
-                onChange={() => {
-                  // Selection state lives in App.tsx; controlled input
-                  // needs an onChange to silence React's warning, but
-                  // the actual toggle work happens in onClick where we
-                  // have access to shiftKey for range select.
-                }}
-              />
-              {/* Filled star always renders. Unstarred star renders too —
-                  CSS hides it unless the row is hovered or the thread is
-                  unread (so the dot can swap to a star on hover). */}
-              {unreadFilled && !filled ? (
+            {/* Left gutter: just the unread dot. Star moved to the
+                right rail under the timestamp so its on/off state lives
+                with the row's other temporal metadata (when it arrived,
+                whether it's marked). The 2x2 action grid (snooze /
+                trash / archive / mark-read) sits below the dot. */}
+            <div className="inbox-row__gutter">
+              {unreadFilled ? (
                 <span className="inbox-row__dot" aria-hidden />
               ) : null}
-              <StarButton
-                filled={filled}
-                pending={pending !== undefined}
-                disabled={!threadable}
-                variant="gutter"
-                stopPropagation
-                onToggle={(next) => onToggleStar(thread.rootKey, next)}
-              />
-              <SnoozeButton
-                snoozedUntil={snoozedUntil}
-                pending={pendingSnooze !== undefined}
-                disabled={!threadable}
-                variant="gutter"
-                stopPropagation
-                onPickPreset={(next) => onPickSnooze(thread.rootKey, next)}
-              />
-              <TrashButton
-                filled={trashFilled}
-                pending={pendingTrash !== undefined}
-                disabled={!threadable}
-                variant="gutter"
-                stopPropagation
-                onToggle={(next) => onToggleTrash(thread.rootKey, next)}
-              />
-              <MarkReadButton
-                unread={unreadFilled}
-                pending={pendingRead !== undefined}
-                disabled={!threadable || !hasInbound}
-                variant="gutter"
-                stopPropagation
-                onToggle={(next) => onToggleRead(thread.rootKey, next)}
-              />
+              <div className="inbox-row__gutter-actions">
+                <SnoozeButton
+                  snoozedUntil={snoozedUntil}
+                  pending={pendingSnooze !== undefined}
+                  disabled={!threadable}
+                  variant="gutter"
+                  size={12}
+                  stopPropagation
+                  onPickPreset={(next) => onPickSnooze(thread.rootKey, next)}
+                />
+                <TrashButton
+                  filled={trashFilled}
+                  pending={pendingTrash !== undefined}
+                  disabled={!threadable}
+                  variant="gutter"
+                  size={12}
+                  stopPropagation
+                  onToggle={(next) => onToggleTrash(thread.rootKey, next)}
+                />
+                <ArchiveButton
+                  filled={archiveFilled}
+                  pending={pendingArchive !== undefined}
+                  disabled={!threadable}
+                  variant="gutter"
+                  size={12}
+                  stopPropagation
+                  onToggle={(next) => onToggleArchive(thread.rootKey, next)}
+                />
+                <MarkReadButton
+                  unread={unreadFilled}
+                  pending={pendingRead !== undefined}
+                  disabled={!threadable || !hasInbound}
+                  variant="gutter"
+                  size={12}
+                  stopPropagation
+                  onToggle={(next) => onToggleRead(thread.rootKey, next)}
+                />
+              </div>
             </div>
             <div className="inbox-row__main">
               <div className="inbox-row__top">
                 <span className="inbox-row__sender">{senderLine}</span>
-                <span className="inbox-row__time mono faint">
-                  {formatRowTimestamp(thread.latestReceivedAt)}
+                <span className="inbox-row__top-end">
+                  <span className="inbox-row__time mono faint">
+                    {formatRowTimestamp(thread.latestReceivedAt)}
+                  </span>
+                  <StarButton
+                    filled={filled}
+                    pending={pending !== undefined}
+                    disabled={!threadable}
+                    variant="gutter"
+                    stopPropagation
+                    onToggle={(next) => onToggleStar(thread.rootKey, next)}
+                  />
                 </span>
               </div>
               <div className="inbox-row__subject">{subject}</div>
@@ -297,6 +317,12 @@ export function InboxList({
                   <span className="inbox-row__chip inbox-row__chip--trashed mono">
                     {" "}
                     trashed
+                  </span>
+                ) : null}
+                {archiveFilled && !trashFilled ? (
+                  <span className="inbox-row__chip inbox-row__chip--archived mono">
+                    {" "}
+                    archived
                   </span>
                 ) : null}
               </div>
@@ -328,7 +354,6 @@ function SelectAllHeader({
   selection,
   onToggle,
 }: SelectAllHeaderProps): JSX.Element | null {
-  const checkboxRef = useRef<HTMLInputElement>(null);
   let total = 0;
   let picked = 0;
   for (const t of threads) {
@@ -336,19 +361,12 @@ function SelectAllHeader({
     total += 1;
     if (selection.has(t.rootKey)) picked += 1;
   }
-  const allChecked = total > 0 && picked === total;
-  const indeterminate = picked > 0 && picked < total;
-
-  useEffect(() => {
-    const el = checkboxRef.current;
-    if (el) el.indeterminate = indeterminate;
-  }, [indeterminate]);
 
   if (threads.length === 0) return null;
 
-  // Count line. "0 of N" when none, "M of N selected" otherwise.
+  // Count line. "N threads" when none picked, "M of N selected" otherwise.
   // Denominator is `total` (threadable rows), not threads.length —
-  // the operator's question is "what would clicking this select?".
+  // the operator's question is "what would Shift+X select?".
   const label =
     picked === 0 ? `${total} threads` : `${picked} of ${total} selected`;
 
@@ -356,18 +374,17 @@ function SelectAllHeader({
     picked > 0 ? "Deselect all threads in view" : "Select all threads in view";
 
   return (
-    <div className="inbox-list__header">
-      <input
-        ref={checkboxRef}
-        type="checkbox"
-        className="inbox-list__header-check"
-        aria-label={ariaLabel}
-        checked={allChecked}
-        disabled={total === 0}
-        onChange={onToggle}
-      />
+    <button
+      type="button"
+      className="inbox-list__header"
+      onClick={onToggle}
+      disabled={total === 0}
+      aria-label={ariaLabel}
+      aria-pressed={picked > 0}
+      title="Toggle select-all in view (Shift+X)"
+    >
       <span className="inbox-list__header-count mono faint">{label}</span>
-    </div>
+    </button>
   );
 }
 

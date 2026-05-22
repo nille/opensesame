@@ -56,6 +56,8 @@ export function TrashButton({
     (filled ? " trash--on" : "") +
     (pending ? " trash--pending" : "") +
     (disabled ? " trash--disabled" : "");
+  const tip = disabled ? label : filled ? "Untrash (#)" : "Trash (#)";
+  const isGutter = variant === "gutter";
   return (
     <button
       type="button"
@@ -63,13 +65,8 @@ export function TrashButton({
       onClick={handleClick}
       aria-pressed={filled}
       aria-label={label}
-      title={
-        disabled
-          ? label
-          : filled
-            ? "Untrash (#)"
-            : "Trash (#)"
-      }
+      title={isGutter ? undefined : tip}
+      data-tooltip={isGutter ? tip : undefined}
       disabled={disabled}
     >
       <TrashIcon filled={filled} size={size} />

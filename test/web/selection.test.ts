@@ -23,8 +23,10 @@ function thread(rootKey: string): Thread {
     unread: false,
     hasOutbound: false,
     starred: false,
+    snoozed: false,
     snoozedUntil: null,
     trashed: false,
+    archived: false,
     count: 0,
   };
 }

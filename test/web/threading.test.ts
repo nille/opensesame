@@ -45,6 +45,7 @@ function row(
     starred_at: null,
     snoozed_until: null,
     trashed_at: null,
+    archived_at: null,
     ...partial,
   };
 }
@@ -866,6 +867,100 @@ describe("groupIntoThreads", () => {
         }),
       ];
       const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
+    });
+  });
+
+  // ADR-0034 (slice 8.16). Thread.archived mirrors Thread.trashed —
+  // every-row AND of archived_at. Independent attribute (not reused
+  // trashed_at), so a thread can be archived without being trashed and
+  // vice versa. Wake-on-reply is identical to trash.
+  describe("Thread.archived aggregation (ADR-0034 / slice 8.16)", () => {
+    const NOW = new Date("2026-05-22T10:00:00.000Z");
+    const STAMP_EARLY = "2026-05-22T09:00:00.000Z";
+    const STAMP_LATE = "2026-05-22T09:30:00.000Z";
+
+    it("returns false when no row carries archived_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.archived).toBe(false);
+    });
+
+    it("returns true when every row carries archived_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          archived_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          archived_at: STAMP_LATE,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.archived).toBe(true);
+    });
+
+    it("wake-on-reply: a single unstamped row resurfaces the thread (auto-unarchive)", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          archived_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          archived_at: STAMP_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000C",
+          received_at: "2026-05-22T09:30:00.000Z",
+          message_id: "<r2@example.com>",
+          references: "<root@example.com>",
+          archived_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.archived).toBe(false);
+    });
+
+    it("a parse-failed singleton thread reads as not archived (skeleton can't be archived)", () => {
+      const rows: InboxRow[] = [
+        failed("01H0000000000000000000A", "2026-05-20T10:00:00.000Z"),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.archived).toBe(false);
+    });
+
+    it("archive and trash are independent attributes on the same thread", () => {
+      // A thread can be archived without being trashed. The two predicates
+      // share shape but read different stamps — verify they don't confuse.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          archived_at: STAMP_EARLY,
+          trashed_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.archived).toBe(true);
       expect(out[0]!.trashed).toBe(false);
     });
   });

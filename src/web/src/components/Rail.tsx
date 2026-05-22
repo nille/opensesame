@@ -2,7 +2,13 @@ import type { ChangeEvent, JSX, KeyboardEvent, Ref } from "react";
 import type { Theme } from "../hooks/useTheme.ts";
 import { formatPolledAt } from "../lib/format.ts";
 
-export type RailView = "inbox" | "sent" | "starred" | "snoozed" | "trashed";
+export type RailView =
+  | "inbox"
+  | "sent"
+  | "starred"
+  | "snoozed"
+  | "trashed"
+  | "archived";
 
 interface RailProps {
   mailbox: string;
@@ -25,6 +31,9 @@ interface RailProps {
   // ADR-0030 (slice 8.12): count of trashed threads in the inbox window.
   // Hidden when zero — same reasoning as starredCount/snoozedCount.
   trashedCount: number;
+  // ADR-0034 (slice 8.16): count of archived threads in the inbox window.
+  // Hidden when zero — same reasoning as starredCount/snoozedCount/trashedCount.
+  archivedCount: number;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchInputRef?: Ref<HTMLInputElement>;
@@ -51,6 +60,7 @@ export function Rail({
   starredCount,
   snoozedCount,
   trashedCount,
+  archivedCount,
   searchQuery,
   onSearchChange,
   searchInputRef,
@@ -69,7 +79,9 @@ export function Rail({
           ? "~/snoozed"
           : view === "trashed"
             ? "~/trash"
-            : "~/sent";
+            : view === "archived"
+              ? "~/archive"
+              : "~/sent";
   return (
     <aside className="rail">
       <div className="rail__head">
@@ -195,6 +207,19 @@ export function Rail({
           <span>trash</span>
           <span className="mono faint">
             {trashedCount === 0 ? "—" : trashedCount}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={
+            "rail__navitem" +
+            (view === "archived" ? " rail__navitem--active" : "")
+          }
+          onClick={() => onChangeView("archived")}
+        >
+          <span>archive</span>
+          <span className="mono faint">
+            {archivedCount === 0 ? "—" : archivedCount}
           </span>
         </button>
         <div

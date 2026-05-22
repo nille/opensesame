@@ -33,6 +33,7 @@ import type {
 } from "../core/store.js";
 import { SuppressionBlockError } from "../core/suppression.js";
 import {
+  parseArchiveThreadInput,
   parseGetAttachmentInput,
   parseGetMessageInput,
   parseListThreadMessagesInput,
@@ -118,6 +119,8 @@ export async function dispatch(
       return handleTrashThread(deps, body);
     case "mark_thread_read":
       return handleMarkThreadRead(deps, body);
+    case "archive_thread":
+      return handleArchiveThread(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -514,6 +517,23 @@ async function handleMarkThreadRead(
 
   try {
     const result = await deps.reader.markThreadRead(parsed.value, new Date());
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0034 (slice 8.16). Per-thread archive toggle. Same status-code
+// shape as trash_thread — empty thread is a 200 no-op rather than 404.
+async function handleArchiveThread(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseArchiveThreadInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  try {
+    const result = await deps.reader.archiveThread(parsed.value, new Date());
     return ok(result);
   } catch (err) {
     return internalError(err);

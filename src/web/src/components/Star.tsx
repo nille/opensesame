@@ -58,6 +58,8 @@ export function StarButton({
     (filled ? " star--on" : "") +
     (pending ? " star--pending" : "") +
     (disabled ? " star--disabled" : "");
+  const tip = disabled ? label : filled ? "Unstar (s)" : "Star (s)";
+  const isGutter = variant === "gutter";
   return (
     <button
       type="button"
@@ -65,13 +67,8 @@ export function StarButton({
       onClick={handleClick}
       aria-pressed={filled}
       aria-label={label}
-      title={
-        disabled
-          ? label
-          : filled
-            ? "Unstar (s)"
-            : "Star (s)"
-      }
+      title={isGutter ? undefined : tip}
+      data-tooltip={isGutter ? tip : undefined}
       disabled={disabled}
     >
       <StarIcon filled={filled} size={size} />

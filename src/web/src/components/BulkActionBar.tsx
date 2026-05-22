@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 import { StarButton } from "./Star.tsx";
 import { TrashButton } from "./Trash.tsx";
+import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 
@@ -24,6 +25,8 @@ interface BulkActionBarProps {
   allStarred: boolean;
   // Predicate: every selected thread is currently trashed.
   allTrashed: boolean;
+  // Predicate: every selected thread is currently archived.
+  allArchived: boolean;
   // Predicate: every selected thread has zero unread inbound rows.
   allRead: boolean;
   // Disable the mark-read affordance entirely when no selected thread
@@ -37,6 +40,7 @@ interface BulkActionBarProps {
   onClear: () => void;
   onStarAll: () => void;
   onTrashAll: () => void;
+  onArchiveAll: () => void;
   onMarkReadAll: () => void;
   onPickSnooze: (snoozedUntil: string | null) => void;
 }
@@ -45,6 +49,7 @@ export function BulkActionBar({
   count,
   allStarred,
   allTrashed,
+  allArchived,
   allRead,
   anyHasInbound,
   snoozePickerOpen,
@@ -52,6 +57,7 @@ export function BulkActionBar({
   onClear,
   onStarAll,
   onTrashAll,
+  onArchiveAll,
   onMarkReadAll,
   onPickSnooze,
 }: BulkActionBarProps): JSX.Element {
@@ -95,6 +101,16 @@ export function BulkActionBar({
             allTrashed ? "Untrash all selected" : "Trash all selected"
           }
           onToggle={onTrashAll}
+        />
+        <ArchiveButton
+          filled={allArchived}
+          pending={false}
+          disabled={false}
+          variant="header"
+          ariaLabel={
+            allArchived ? "Unarchive all selected" : "Archive all selected"
+          }
+          onToggle={onArchiveAll}
         />
         <MarkReadButton
           unread={!allRead}

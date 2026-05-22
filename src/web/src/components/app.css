@@ -302,22 +302,27 @@
 .inbox-list__header {
   display: flex;
   align-items: center;
-  gap: var(--r-3);
-  padding: var(--r-3) var(--r-5);
+  width: 100%;
+  background: transparent;
+  border: 0;
   border-bottom: 1px solid var(--rule);
-}
-
-.inbox-list__header-check {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: var(--accent);
+  padding: var(--r-3) var(--r-5);
+  text-align: left;
   cursor: pointer;
+  color: inherit;
+  transition: background-color var(--d-fast) var(--ease-out);
 }
 
-.inbox-list__header-check:disabled {
-  cursor: not-allowed;
-  opacity: 0.4;
+.inbox-list__header:hover:not(:disabled) {
+  background: var(--paper-2);
+}
+
+.inbox-list__header:disabled {
+  cursor: default;
+}
+
+.inbox-list__header[aria-pressed="true"] .inbox-list__header-count {
+  color: var(--accent);
 }
 
 .inbox-list__header-count {
@@ -326,9 +331,9 @@
 
 .inbox-row {
   display: grid;
-  grid-template-columns: 16px 1fr;
-  gap: 0;
-  padding: var(--r-3) var(--r-4) var(--r-3) var(--r-2);
+  grid-template-columns: 30px 1fr;
+  column-gap: var(--r-3);
+  padding: var(--r-3) var(--r-4) var(--r-3) var(--r-3);
   border-bottom: 1px solid var(--rule);
   cursor: pointer;
   position: relative;
@@ -339,12 +344,21 @@
   background: var(--paper-2);
 }
 
+/* Selected rows (focused-for-reading or bulk-checked) keep their accent
+   tint on hover — the icon reveal already signals where the cursor is,
+   so swapping to paper-2 just muddies the selection signal. */
+.inbox-row--selected:hover,
+.inbox-row--checked:hover {
+  background: var(--accent-soft);
+}
+
+/* Reading-focused row (j/k cursor). Keeps the top + bottom accent rules
+   so it stays distinguishable from a bulk-checked row. */
 .inbox-row--selected {
   background: var(--accent-soft);
 }
 
 .inbox-row--selected::before {
-  /* Selection marker — top edge accent rule. Not a left stripe. */
   content: "";
   position: absolute;
   top: 0;
@@ -362,6 +376,21 @@
   height: 1px;
   background: var(--accent);
   z-index: 1;
+}
+
+/* Bulk-selected row (Shift+click / x). Color is the only signal now —
+   accent-soft fill + a 2px left accent rule. The left rule is the one
+   place we use a vertical accent stripe in the app, intentionally
+   distinct from the focused row's horizontal top/bottom rules so the
+   two states never collide visually. */
+.inbox-row--checked {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 0 var(--accent);
+}
+.inbox-row--checked.inbox-row--selected {
+  /* When the focused row is also bulk-checked, both signals layer:
+     left rule (bulk) + top/bottom rules (focus). */
+  background: var(--accent-soft);
 }
 
 .inbox-row--skel {
@@ -389,29 +418,17 @@
   position: relative;
 }
 
-/* Slice 8.14 — selection checkbox sits at the top of the gutter, leading
-   the existing star/snooze/trash/mark-read group. Hidden by default,
-   surfaces on row hover and stays visible while the row is selected
-   (matches the per-row icon reveal posture). */
-.inbox-row__check {
-  width: 12px;
-  height: 12px;
-  margin: 0;
-  cursor: pointer;
-  accent-color: var(--accent);
-  opacity: 0;
-  transition: opacity var(--d-fast) var(--ease-out);
-}
-.inbox-row:hover .inbox-row__check,
-.inbox-row--checked .inbox-row__check {
-  opacity: 1;
-}
-.inbox-row__check:disabled {
-  cursor: not-allowed;
-  opacity: 0;
-}
-.inbox-row:hover .inbox-row__check:disabled {
-  opacity: 0.25;
+/* Slice 8.16. Snooze / trash / archive / mark-read pair into a 2x2 mini
+   grid so the gutter doesn't grow tall as more icons land. The unread
+   dot sits above this block when the thread has unread inbound rows.
+   The grid fills the 30px gutter column edge-to-edge; row padding (left)
+   and column-gap (right) supply equal breathing room on both sides. */
+.inbox-row__gutter-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 12px);
+  grid-auto-rows: 12px;
+  gap: 6px;
+  margin-top: 2px;
 }
 
 .inbox-row__dot {
@@ -422,37 +439,6 @@
 }
 .inbox-row__dot--danger {
   background: var(--danger);
-}
-
-/* Slice 8.10 (ADR-0028).
-   Gutter star — three states share the same column:
-   - filled (starred): always visible.
-   - unread + unstarred: dot wins by default; star fades in on row hover.
-   - read + unstarred: empty star fades in on row hover.
-
-   The unread dot and the empty star occupy the same 14×14 box — when the
-   star reveals on hover, position-absolute it on top of the dot so the
-   row doesn't reflow. We never animate width/height; only opacity, which
-   stays compositor-friendly. */
-.inbox-row__gutter--starred .star {
-  opacity: 1;
-}
-
-.inbox-row__gutter--unread .star {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  justify-content: center;
-  align-items: flex-start;
-  padding-top: 6px;
-}
-.inbox-row__gutter--unread .inbox-row__dot {
-  /* Hide the dot on hover so the star can take its place without two
-     icons fighting for the same 14px box. */
-  transition: opacity var(--d-fast) var(--ease-out);
-}
-.inbox-row:hover .inbox-row__gutter--unread .inbox-row__dot {
-  opacity: 0;
 }
 
 .inbox-row__main {
@@ -468,6 +454,15 @@
   align-items: baseline;
   gap: var(--r-2);
   min-width: 0;
+}
+
+/* Right rail: timestamp + star. Star sits to the right of the time so
+   the on-state lives next to the row's other temporal metadata. */
+.inbox-row__top-end {
+  display: flex;
+  align-items: center;
+  gap: var(--r-2);
+  flex-shrink: 0;
 }
 
 .inbox-row__sender {
@@ -1112,6 +1107,7 @@
 .star--gutter {
   width: 14px;
   height: 14px;
+  margin-top: 2px;
 }
 .inbox-row:hover .star--gutter,
 .inbox-row .star--gutter.star--on,
@@ -1204,9 +1200,8 @@
 }
 
 .snooze--gutter {
-  width: 14px;
-  height: 14px;
-  margin-top: 4px;
+  width: 12px;
+  height: 12px;
 }
 .inbox-row:hover .snooze--gutter,
 .inbox-row .snooze--gutter.snooze--on,
@@ -1372,9 +1367,8 @@
 }
 
 .trash--gutter {
-  width: 14px;
-  height: 14px;
-  margin-top: 4px;
+  width: 12px;
+  height: 12px;
 }
 .inbox-row:hover .trash--gutter,
 .inbox-row .trash--gutter.trash--on,
@@ -1403,6 +1397,88 @@
 .inbox-row__chip--trashed {
   border-color: var(--danger-soft);
   color: var(--danger);
+}
+
+/* ============================================================
+   ARCHIVE (slice 8.16, ADR-0034)
+   ============================================================
+ *
+ * Archive mirrors trash one-for-one — same gutter / header variants,
+ * same pending / disabled handling. The semantic distinction is in the
+ * on-state color: archive uses --ink-muted (filed, not destroyed)
+ * whereas trash uses --danger. Both share posture and reveal so the
+ * operator's muscle memory transfers.
+ */
+
+.archive {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.archive:hover:not(.archive--disabled) {
+  color: var(--ink);
+}
+
+.archive--on {
+  color: var(--ink-muted);
+  opacity: 1;
+}
+
+.archive--on:hover:not(.archive--disabled) {
+  color: var(--ink);
+}
+
+.archive--pending {
+  opacity: 0.65;
+}
+
+.archive--disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+  opacity: 0.4;
+}
+
+.archive--gutter {
+  width: 12px;
+  height: 12px;
+}
+.inbox-row:hover .archive--gutter,
+.inbox-row .archive--gutter.archive--on,
+.inbox-row .archive--gutter.archive--pending {
+  opacity: 1;
+}
+.inbox-row .archive--gutter.archive--disabled {
+  opacity: 0;
+}
+.inbox-row:hover .archive--gutter.archive--disabled {
+  opacity: 0.25;
+}
+
+.archive--header {
+  opacity: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.archive--header:hover:not(.archive--disabled) {
+  background: var(--paper-2);
+}
+
+/* Archived chip on the inbox row meta strip — neutral border and muted
+   ink; archive is a routine "filed" state, not a warning. */
+.inbox-row__chip--archived {
+  border-color: var(--ink-faint);
+  color: var(--ink-muted);
 }
 
 /* Mark-read affordance (slice 8.13). Mirrors trash's posture:
@@ -1451,9 +1527,8 @@
 }
 
 .markread--gutter {
-  width: 14px;
-  height: 14px;
-  margin-top: 4px;
+  width: 12px;
+  height: 12px;
 }
 .inbox-row:hover .markread--gutter,
 .inbox-row .markread--gutter.markread--unread,
@@ -1475,6 +1550,66 @@
 }
 .markread--header:hover:not(.markread--disabled) {
   background: var(--paper-2);
+}
+
+/* ============================================================
+   TOOLTIP (gutter icons)
+   ============================================================
+ *
+ * Shared CSS-only tooltip for any element with [data-tooltip]. Used by
+ * the gutter-variant icon buttons; header-variant buttons keep the
+ * native title attribute. Renders as a small mono chip below-right of
+ * the icon, with a short fade-in (200ms) so the operator sees it without
+ * waiting on the browser's ~700ms native title delay.
+ *
+ * Implementation note: ::after carries the label, ::before the arrow.
+ * Both are pointer-events: none so the tooltip never intercepts clicks
+ * — important for the snooze button which has its own picker popover.
+ */
+[data-tooltip] {
+  position: relative;
+}
+[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 6px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-xs);
+  white-space: nowrap;
+  border-radius: var(--radius-sm);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out);
+  z-index: 50;
+}
+[data-tooltip]::before {
+  content: "";
+  position: absolute;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 4px solid transparent;
+  border-top-color: var(--ink);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity var(--d-fast) var(--ease-out);
+  z-index: 50;
+}
+[data-tooltip]:hover::after,
+[data-tooltip]:hover::before,
+[data-tooltip]:focus-visible::after,
+[data-tooltip]:focus-visible::before {
+  opacity: 1;
+  transition-delay: 250ms;
+}
+[data-tooltip]:disabled::after,
+[data-tooltip]:disabled::before {
+  display: none;
 }
 
 /* ============================================================

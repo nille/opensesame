@@ -11,6 +11,8 @@ import {
 } from "../core/internal-id.js";
 import { assembleBody, type StoredChunk } from "../core/reader.js";
 import type {
+  ArchiveThreadInput,
+  ArchiveThreadResult,
   InboxRow,
   InboxRowFailed,
   InboxRowOk,
@@ -72,6 +74,7 @@ export function makeDynamoMessageReader(
     snoozeThread: (input, now) => snoozeThread(deps, input, now),
     trashThread: (input, now) => trashThread(deps, input, now),
     markThreadRead: (input, now) => markThreadRead(deps, input, now),
+    archiveThread: (input, now) => archiveThread(deps, input, now),
   };
 }
 
@@ -189,6 +192,7 @@ function projectOk(
     starred_at: nullableString(row["starred_at"]),
     snoozed_until: nullableString(row["snoozed_until"]),
     trashed_at: nullableString(row["trashed_at"]),
+    archived_at: nullableString(row["archived_at"]),
   };
 }
 
@@ -318,6 +322,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     starred_at: nullableString(row["starred_at"]),
     snoozed_until: nullableString(row["snoozed_until"]),
     trashed_at: nullableString(row["trashed_at"]),
+    archived_at: nullableString(row["archived_at"]),
   };
   return ok;
 }
@@ -748,6 +753,32 @@ async function trashThread(
     thread_id: input.thread_id,
     trashed: input.trashed,
     trashed_at: input.trashed ? isoNow : null,
+    updated_count,
+  };
+}
+
+// ADR-0034 (slice 8.16). Per-thread archive toggle. Boolean wire shape
+// matches trash; when archiving, stamp `archived_at = now`, when
+// unarchiving, REMOVE. Independent attribute from `trashed_at` — archive
+// and trash are distinct operator intents (see ADR-0034 "Considered and
+// rejected" for why).
+async function archiveThread(
+  deps: DynamoMessageReaderDeps,
+  input: ArchiveThreadInput,
+  now: Date,
+): Promise<ArchiveThreadResult> {
+  const isoNow = now.toISOString();
+  const value = input.archived ? isoNow : null;
+  const updated_count = await fanOutThreadAttribute(
+    deps,
+    input.thread_id,
+    "archived_at",
+    value,
+  );
+  return {
+    thread_id: input.thread_id,
+    archived: input.archived,
+    archived_at: input.archived ? isoNow : null,
     updated_count,
   };
 }

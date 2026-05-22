@@ -140,6 +140,11 @@ export type ReadMessageOk = {
   // Aggregation rule mirrors snooze ("every row stamped → trashed"), so a
   // fresh inbound reply auto-resurfaces the conversation in the inbox.
   trashed_at: string | null;
+  // ADR-0034 (slice 8.16): per-row sparse archive annotation. ISO-8601
+  // timestamp the row was archived. Attribute-absent → null → not archived.
+  // Aggregation and wake-on-reply rules mirror trash; archive lives
+  // alongside trash so the two states are independent.
+  archived_at: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -197,6 +202,11 @@ export type InboxRowOk = {
   // other view filters them out. Wake-on-reply falls out of the "every
   // row stamped → trashed" aggregation.
   trashed_at: string | null;
+  // ADR-0034 (slice 8.16): per-row sparse archive annotation. The Archive
+  // sidebar entry surfaces archived threads; every other day-to-day view
+  // (Inbox, Sent, Starred, Snoozed, Trash) filters them out. Wake-on-reply
+  // falls out of the same every-row aggregation as trash.
+  archived_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -333,6 +343,22 @@ export type TrashThreadResult = {
   updated_count: number;
 };
 
+// archive_thread per ADR-0034. `archived: true` stamps `archived_at = now`
+// on every row in the thread; `archived: false` removes the attribute. Wire
+// shape mirrors trash (boolean toggle, ISO-or-null echo). Empty thread →
+// updated_count: 0, no 404.
+export type ArchiveThreadInput = {
+  thread_id: string;
+  archived: boolean;
+};
+
+export type ArchiveThreadResult = {
+  thread_id: string;
+  archived: boolean;
+  archived_at: string | null;
+  updated_count: number;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -431,4 +457,15 @@ export interface MessageReader {
     input: MarkThreadReadInput,
     now: Date,
   ): Promise<MarkThreadReadResult>;
+  // ADR-0034 (slice 8.16): toggle the archive annotation on every row in
+  // the thread. Same fan-out shape as starThread / snoozeThread /
+  // trashThread; `archived: true` stamps `archived_at = now`,
+  // `archived: false` removes the attribute. Archive is independent from
+  // trash — a thread is never simultaneously archived and trashed in
+  // practice (operator chooses one or the other), but the storage allows
+  // both without conflict.
+  archiveThread(
+    input: ArchiveThreadInput,
+    now: Date,
+  ): Promise<ArchiveThreadResult>;
 }

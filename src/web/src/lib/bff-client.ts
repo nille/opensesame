@@ -138,6 +138,10 @@ export type InboxRowOk = {
   // never trashed. groupIntoThreads aggregates "every row stamped → trashed",
   // so a fresh inbound reply auto-resurfaces the conversation in the inbox.
   trashed_at: string | null;
+  // ADR-0034 (slice 8.16): per-row sparse archive annotation. null on rows
+  // never archived. groupIntoThreads aggregates "every row stamped →
+  // archived", same wake-on-reply shape as trash. Independent attribute.
+  archived_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -236,6 +240,21 @@ export type MarkThreadReadResult = {
   updated_count: number;
 };
 
+// ADR-0034 (slice 8.16): toggle the archive annotation on every row in
+// the thread. Wire shape mirrors trash. Echoes archived_at so the UI can
+// render the chip without a refetch.
+export type ArchiveThreadInput = {
+  thread_id: string;
+  archived: boolean;
+};
+
+export type ArchiveThreadResult = {
+  thread_id: string;
+  archived: boolean;
+  archived_at: string | null;
+  updated_count: number;
+};
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -281,6 +300,8 @@ export type ReadMessageOk = {
   snoozed_until: string | null;
   // ADR-0030 (slice 8.12): per-row sparse trash annotation.
   trashed_at: string | null;
+  // ADR-0034 (slice 8.16): per-row sparse archive annotation.
+  archived_at: string | null;
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -390,6 +411,11 @@ export const bff = {
     input: MarkThreadReadInput,
   ): Promise<RpcResult<MarkThreadReadResult>> {
     return call<MarkThreadReadResult>("mark_thread_read", input);
+  },
+  archiveThread(
+    input: ArchiveThreadInput,
+  ): Promise<RpcResult<ArchiveThreadResult>> {
+    return call<ArchiveThreadResult>("archive_thread", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);
