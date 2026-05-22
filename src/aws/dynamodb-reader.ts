@@ -32,6 +32,8 @@ import type {
   StarThreadResult,
   StoredAttachment,
   StoredMessageHeaders,
+  TrashThreadInput,
+  TrashThreadResult,
 } from "../core/store.js";
 
 // DDB read-side adapter for ADR-0007's get_message.
@@ -66,6 +68,7 @@ export function makeDynamoMessageReader(
     listThreadMessages: (input) => listThreadMessages(deps, input),
     starThread: (input, now) => starThread(deps, input, now),
     snoozeThread: (input, now) => snoozeThread(deps, input, now),
+    trashThread: (input, now) => trashThread(deps, input, now),
   };
 }
 
@@ -182,6 +185,7 @@ function projectOk(
     thread_id: nullableString(row["thread_id"]),
     starred_at: nullableString(row["starred_at"]),
     snoozed_until: nullableString(row["snoozed_until"]),
+    trashed_at: nullableString(row["trashed_at"]),
   };
 }
 
@@ -310,6 +314,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     thread_id: nullableString(row["thread_id"]),
     starred_at: nullableString(row["starred_at"]),
     snoozed_until: nullableString(row["snoozed_until"]),
+    trashed_at: nullableString(row["trashed_at"]),
   };
   return ok;
 }
@@ -594,147 +599,64 @@ async function listThreadMessages(
   return { messages, next_cursor };
 }
 
-// ADR-0028 (slice 8.10). Per-thread star toggle with row-level fan-out:
-// resolve every primary key in the thread via ThreadIdGSI, then issue one
-// conditional UpdateItem per row. The attribute_exists(address) guard
-// prevents UpdateItem from creating a phantom row when the GSI projection
-// is stale; idempotent at the row level (re-star overwrites the timestamp,
-// re-unstar of an absent attribute is a benign no-op). Cap the fan-out at
-// MAX_STAR_FAN_OUT to bound write cost on pathological mailing-list
-// threads — the dispatcher echoes that ceiling.
-const MAX_STAR_FAN_OUT = 200;
+// Per-thread sparse-attribute fan-out, shared by starThread (ADR-0028),
+// snoozeThread (ADR-0029), and trashThread (ADR-0030). Resolves every
+// primary key in the thread via ThreadIdGSI, then fans out one conditional
+// UpdateItem per row: SET when `value` is a string, REMOVE when null.
+//
+// The attribute_exists(address) guard prevents UpdateItem from creating a
+// phantom row when the GSI projection is stale; ConditionalCheckFailed is
+// tolerated silently per-row (the row may have been deleted between Query
+// and Update — the operator's "toggle this thread" intent still holds for
+// the rest). Cap the fan-out at MAX_THREAD_LIMIT to bound write cost on
+// pathological mailing-list threads; the dispatcher echoes that ceiling.
+const MAX_THREAD_LIMIT = 200;
 
-async function starThread(
+async function fanOutThreadAttribute(
   deps: DynamoMessageReaderDeps,
-  input: StarThreadInput,
-  now: Date,
-): Promise<StarThreadResult> {
-  const isoNow = now.toISOString();
-
-  // Step 1: resolve primary keys for every row in the thread. Project only
-  // the PK pair so the GSI hop stays at one RCU per row.
+  threadId: string,
+  attributeName: string,
+  value: string | null,
+): Promise<number> {
   const out = await deps.client.send(
     new QueryCommand({
       TableName: deps.messagesTable,
       IndexName: deps.threadIdGsiName,
       KeyConditionExpression: "thread_id = :tid",
-      ExpressionAttributeValues: { ":tid": input.thread_id },
+      ExpressionAttributeValues: { ":tid": threadId },
       ProjectionExpression: "address, internal_id",
-      Limit: MAX_STAR_FAN_OUT,
+      Limit: MAX_THREAD_LIMIT,
     }),
   );
   const rows = out.Items ?? [];
+  if (rows.length === 0) return 0;
 
-  if (rows.length === 0) {
-    return {
-      thread_id: input.thread_id,
-      starred: input.starred,
-      starred_at: input.starred ? isoNow : null,
-      updated_count: 0,
-    };
-  }
-
-  // Step 2: fan out the per-row writes in parallel. attribute_exists(addr)
-  // guards against phantom rows from a stale GSI projection. We tolerate
-  // ConditionalCheckFailed silently — same row may have been deleted between
-  // the GSI Query and the UpdateItem; the operator's intent ("toggle this
-  // thread") still holds for the rest.
-  const results = await Promise.all(
-    rows.map(async (r) => {
-      const address = String(r["address"]);
-      const internalId = String(r["internal_id"]);
-      const cmd = input.starred
-        ? new UpdateCommand({
-            TableName: deps.messagesTable,
-            Key: { address, internal_id: internalId },
-            UpdateExpression: "SET starred_at = :now",
-            ConditionExpression: "attribute_exists(#addr)",
-            ExpressionAttributeNames: { "#addr": "address" },
-            ExpressionAttributeValues: { ":now": isoNow },
-          })
-        : new UpdateCommand({
-            TableName: deps.messagesTable,
-            Key: { address, internal_id: internalId },
-            UpdateExpression: "REMOVE starred_at",
-            ConditionExpression: "attribute_exists(#addr)",
-            ExpressionAttributeNames: { "#addr": "address" },
-          });
-      try {
-        await deps.client.send(cmd);
-        return true;
-      } catch (err) {
-        if (err instanceof ConditionalCheckFailedException) return false;
-        throw err;
-      }
-    }),
-  );
-
-  const updated_count = results.filter(Boolean).length;
-  return {
-    thread_id: input.thread_id,
-    starred: input.starred,
-    starred_at: input.starred ? isoNow : null,
-    updated_count,
-  };
-}
-
-// ADR-0029 (slice 8.11). Same fan-out shape as starThread; the only
-// differences are the attribute name (`snoozed_until` vs `starred_at`)
-// and the value source (the operator-supplied wake-time ISO instead of
-// `now`). Past-time validation lives in the BFF schema — by the time
-// the reader is called, `input.snoozed_until` is either null (unsnooze)
-// or a future ISO string. The MAX_THREAD_LIMIT cap is shared with star
-// and list_thread_messages.
-async function snoozeThread(
-  deps: DynamoMessageReaderDeps,
-  input: SnoozeThreadInput,
-  _now: Date,
-): Promise<SnoozeThreadResult> {
-  // Step 1: resolve every primary key in the thread via the GSI. Project
-  // only the PK pair so this stays at one RCU per row.
-  const out = await deps.client.send(
-    new QueryCommand({
-      TableName: deps.messagesTable,
-      IndexName: deps.threadIdGsiName,
-      KeyConditionExpression: "thread_id = :tid",
-      ExpressionAttributeValues: { ":tid": input.thread_id },
-      ProjectionExpression: "address, internal_id",
-      Limit: MAX_STAR_FAN_OUT,
-    }),
-  );
-  const rows = out.Items ?? [];
-
-  if (rows.length === 0) {
-    return {
-      thread_id: input.thread_id,
-      snoozed_until: input.snoozed_until,
-      updated_count: 0,
-    };
-  }
-
-  // Step 2: fan out the per-row writes in parallel. Same phantom-row
-  // guard and ConditionalCheckFailed tolerance as starThread.
-  const wakeAt = input.snoozed_until;
   const results = await Promise.all(
     rows.map(async (r) => {
       const address = String(r["address"]);
       const internalId = String(r["internal_id"]);
       const cmd =
-        wakeAt !== null
+        value !== null
           ? new UpdateCommand({
               TableName: deps.messagesTable,
               Key: { address, internal_id: internalId },
-              UpdateExpression: "SET snoozed_until = :wake",
+              UpdateExpression: `SET #attr = :val`,
               ConditionExpression: "attribute_exists(#addr)",
-              ExpressionAttributeNames: { "#addr": "address" },
-              ExpressionAttributeValues: { ":wake": wakeAt },
+              ExpressionAttributeNames: {
+                "#addr": "address",
+                "#attr": attributeName,
+              },
+              ExpressionAttributeValues: { ":val": value },
             })
           : new UpdateCommand({
               TableName: deps.messagesTable,
               Key: { address, internal_id: internalId },
-              UpdateExpression: "REMOVE snoozed_until",
+              UpdateExpression: `REMOVE #attr`,
               ConditionExpression: "attribute_exists(#addr)",
-              ExpressionAttributeNames: { "#addr": "address" },
+              ExpressionAttributeNames: {
+                "#addr": "address",
+                "#attr": attributeName,
+              },
             });
       try {
         await deps.client.send(cmd);
@@ -745,11 +667,72 @@ async function snoozeThread(
       }
     }),
   );
+  return results.filter(Boolean).length;
+}
 
-  const updated_count = results.filter(Boolean).length;
+// ADR-0028 (slice 8.10). Per-thread star toggle. Re-star overwrites the
+// timestamp (UI toggle, not first-event semantics).
+async function starThread(
+  deps: DynamoMessageReaderDeps,
+  input: StarThreadInput,
+  now: Date,
+): Promise<StarThreadResult> {
+  const isoNow = now.toISOString();
+  const value = input.starred ? isoNow : null;
+  const updated_count = await fanOutThreadAttribute(
+    deps,
+    input.thread_id,
+    "starred_at",
+    value,
+  );
+  return {
+    thread_id: input.thread_id,
+    starred: input.starred,
+    starred_at: input.starred ? isoNow : null,
+    updated_count,
+  };
+}
+
+// ADR-0029 (slice 8.11). Past-time validation lives in the BFF schema —
+// by the time the reader is called, `snoozed_until` is null (unsnooze) or
+// a future ISO string.
+async function snoozeThread(
+  deps: DynamoMessageReaderDeps,
+  input: SnoozeThreadInput,
+  _now: Date,
+): Promise<SnoozeThreadResult> {
+  const updated_count = await fanOutThreadAttribute(
+    deps,
+    input.thread_id,
+    "snoozed_until",
+    input.snoozed_until,
+  );
   return {
     thread_id: input.thread_id,
     snoozed_until: input.snoozed_until,
+    updated_count,
+  };
+}
+
+// ADR-0030 (slice 8.12). Boolean wire shape (matches star, not snooze);
+// when trashing, stamp `trashed_at = now`, when untrashing, REMOVE.
+async function trashThread(
+  deps: DynamoMessageReaderDeps,
+  input: TrashThreadInput,
+  now: Date,
+): Promise<TrashThreadResult> {
+  const isoNow = now.toISOString();
+  const value = input.trashed ? isoNow : null;
+  const updated_count = await fanOutThreadAttribute(
+    deps,
+    input.thread_id,
+    "trashed_at",
+    value,
+  );
+  return {
+    thread_id: input.thread_id,
+    trashed: input.trashed,
+    trashed_at: input.trashed ? isoNow : null,
     updated_count,
   };
 }

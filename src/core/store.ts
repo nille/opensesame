@@ -135,6 +135,11 @@ export type ReadMessageOk = {
   // unexpired snoozed_until → snoozed", so a fresh inbound reply (which
   // arrives without the attribute) auto-wakes the conversation.
   snoozed_until: string | null;
+  // ADR-0030 (slice 8.12): per-row sparse trash annotation. ISO-8601
+  // timestamp the row was trashed. Attribute-absent → null → not trashed.
+  // Aggregation rule mirrors snooze ("every row stamped → trashed"), so a
+  // fresh inbound reply auto-resurfaces the conversation in the inbox.
+  trashed_at: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -187,6 +192,11 @@ export type InboxRowOk = {
   // sidebar entry filters in-window threads client-side; wake-on-reply
   // falls out of the "every row unexpired → snoozed" aggregation.
   snoozed_until: string | null;
+  // ADR-0030 (slice 8.12): per-row sparse trash annotation. The Trash
+  // sidebar entry is the only view that surfaces trashed threads; every
+  // other view filters them out. Wake-on-reply falls out of the "every
+  // row stamped → trashed" aggregation.
+  trashed_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -305,6 +315,24 @@ export type SnoozeThreadResult = {
   updated_count: number;
 };
 
+// trash_thread per ADR-0030. `trashed: true` stamps `trashed_at = now` on
+// every row in the thread; `trashed: false` removes the attribute. Like
+// star, the wire shape is a boolean toggle — re-trashing overwrites the
+// timestamp. The result echoes `trashed_at` so the caller can render the
+// affordance without a refetch. Empty thread → updated_count: 0, no 404
+// (consistent with star_thread / snooze_thread).
+export type TrashThreadInput = {
+  thread_id: string;
+  trashed: boolean;
+};
+
+export type TrashThreadResult = {
+  thread_id: string;
+  trashed: boolean;
+  trashed_at: string | null;
+  updated_count: number;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -370,4 +398,10 @@ export interface MessageReader {
     input: SnoozeThreadInput,
     now: Date,
   ): Promise<SnoozeThreadResult>;
+  // ADR-0030 (slice 8.12): toggle the trash annotation on every row in
+  // the thread. Same fan-out shape as starThread / snoozeThread;
+  // `trashed: true` stamps `trashed_at = now` on every row, `trashed: false`
+  // removes the attribute. The `now` parameter timestamps the trash
+  // operation when stamping.
+  trashThread(input: TrashThreadInput, now: Date): Promise<TrashThreadResult>;
 }

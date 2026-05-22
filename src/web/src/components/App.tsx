@@ -43,7 +43,7 @@ type PaneState =
       replyParentId: string | null;
     };
 
-type View = "inbox" | "sent" | "starred" | "snoozed";
+type View = "inbox" | "sent" | "starred" | "snoozed" | "trashed";
 
 export function App(): JSX.Element {
   const { theme, toggle } = useTheme();
@@ -69,6 +69,13 @@ export function App(): JSX.Element {
   const [pendingSnoozes, setPendingSnoozes] = useState<
     Map<string, string | null>
   >(() => new Map());
+  // ADR-0030 (slice 8.12). Optimistic-pending trash intent map keyed by
+  // Thread.rootKey; mirrors pendingStars (boolean toggle, not nullable
+  // wake time). Set on toggle, cleared when the next inbox poll surfaces
+  // the new authoritative trashed_at, or rolled back on RPC error.
+  const [pendingTrashes, setPendingTrashes] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
   // The reader-header snooze picker is controlled so the global `z` shortcut
   // can pop it open while keeping the gutter pickers self-managed.
   const [readerSnoozePickerOpen, setReaderSnoozePickerOpen] = useState(false);
@@ -134,20 +141,33 @@ export function App(): JSX.Element {
     [pendingSnoozes],
   );
 
+  // ADR-0030 (slice 8.12). Pending intents win over server state so a
+  // freshly-trashed thread vanishes from non-Trash views instantly (and
+  // a pending untrash surfaces a thread that was trashed mid-poll).
+  const isTrashedNow = useCallback(
+    (t: Thread): boolean => {
+      const pending = pendingTrashes.get(t.rootKey);
+      if (pending !== undefined) return pending;
+      return t.trashed;
+    },
+    [pendingTrashes],
+  );
+
   const inboxThreads = useMemo(
     () =>
       allThreads.filter(
         (t) =>
           (t.failedRows.length > 0 ||
             t.rows.some((r) => r.direction === "in")) &&
-          !isSnoozedNow(t),
+          !isSnoozedNow(t) &&
+          !isTrashedNow(t),
       ),
-    [allThreads, isSnoozedNow],
+    [allThreads, isSnoozedNow, isTrashedNow],
   );
 
   const sentThreads = useMemo(
-    () => allThreads.filter((t) => t.hasOutbound),
-    [allThreads],
+    () => allThreads.filter((t) => t.hasOutbound && !isTrashedNow(t)),
+    [allThreads, isTrashedNow],
   );
 
   // ADR-0028 (slice 8.10). Threads visible to the operator with at least
@@ -158,11 +178,12 @@ export function App(): JSX.Element {
   const starredThreads = useMemo(
     () =>
       allThreads.filter((t) => {
+        if (isTrashedNow(t)) return false;
         const pending = pendingStars.get(t.rootKey);
         if (pending !== undefined) return pending;
         return t.starred;
       }),
-    [allThreads, pendingStars],
+    [allThreads, pendingStars, isTrashedNow],
   );
 
   const searchThreads = useMemo<Thread[]>(
@@ -175,7 +196,9 @@ export function App(): JSX.Element {
   // intents are applied via isSnoozedNow upstream of the sort so a
   // freshly-snoozed thread joins the list in real time.
   const snoozedThreads = useMemo<Thread[]>(() => {
-    const list = allThreads.filter((t) => isSnoozedNow(t));
+    const list = allThreads.filter(
+      (t) => isSnoozedNow(t) && !isTrashedNow(t),
+    );
     return list.slice().sort((a, b) => {
       const aPending = pendingSnoozes.get(a.rootKey);
       const bPending = pendingSnoozes.get(b.rootKey);
@@ -183,7 +206,16 @@ export function App(): JSX.Element {
       const bUntil = (bPending ?? b.snoozedUntil) ?? "";
       return aUntil.localeCompare(bUntil);
     });
-  }, [allThreads, isSnoozedNow, pendingSnoozes]);
+  }, [allThreads, isSnoozedNow, isTrashedNow, pendingSnoozes]);
+
+  // Trash view: show only the trashed threads, sorted newest-first by
+  // most-recent activity (same default as Inbox). Pending-untrash entries
+  // are excluded so the row vanishes from Trash the instant the operator
+  // hits #.
+  const trashedThreads = useMemo<Thread[]>(
+    () => allThreads.filter((t) => isTrashedNow(t)),
+    [allThreads, isTrashedNow],
+  );
 
   const threads = searchActive
     ? searchThreads
@@ -193,7 +225,9 @@ export function App(): JSX.Element {
         ? starredThreads
         : view === "snoozed"
           ? snoozedThreads
-          : sentThreads;
+          : view === "trashed"
+            ? trashedThreads
+            : sentThreads;
 
   // Rail counts stay as message counts (per ADR-0023): triage volume is
   // what the operator wants to see, not conversation count.
@@ -216,6 +250,7 @@ export function App(): JSX.Element {
   // doubles as a calm "how many am I tracking" cue.
   const starredThreadCount = starredThreads.length;
   const snoozedThreadCount = snoozedThreads.length;
+  const trashedThreadCount = trashedThreads.length;
 
   // Kept around for the search-loading skeleton check.
   const messages = searchActive ? searchMessages : allMessages;
@@ -381,6 +416,40 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0030 (slice 8.12). Mirror of toggleStar — boolean trash toggle
+  // with optimistic-pending intent. Subject-fallback rollups are gated
+  // upstream by TrashButton.disabled; the early return is a defense in
+  // depth.
+  const toggleTrash = useCallback(
+    (rootKey: string, next: boolean): void => {
+      if (!rootKey.startsWith("<")) return;
+      setPendingTrashes((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, next);
+        return m;
+      });
+      void bff
+        .trashThread({ thread_id: rootKey, trashed: next })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            setPendingTrashes((prev) => {
+              const m = new Map(prev);
+              m.delete(rootKey);
+              return m;
+            });
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          setPendingTrashes((prev) => {
+            const m = new Map(prev);
+            m.delete(rootKey);
+            return m;
+          });
+        });
+    },
+    [queryClient],
+  );
+
   // Resolve the parent for reply mode. Reuses the same ["message", id] cache
   // entry that the Reader populated, so this is a free hit in the common case.
   const replyParentId =
@@ -461,6 +530,16 @@ export function App(): JSX.Element {
           if (!currentlySnoozed) return;
           e.preventDefault();
           pickSnooze(t.rootKey, null);
+        } else if (e.key === "#") {
+          // Slice 8.12. Toggle trash on the selected thread. Same gate
+          // as star/snooze — server-stamped thread ids only.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          const pending = pendingTrashes.get(t.rootKey);
+          const current = pending ?? t.trashed;
+          toggleTrash(t.rootKey, !current);
         } else if (e.key === "/") {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -476,6 +555,7 @@ export function App(): JSX.Element {
               "r        reply to latest in thread",
               "s        star / unstar selected thread",
               "z / Z    snooze (picker) / unsnooze immediately",
+              "#        trash / untrash selected thread",
               "c        compose new",
               "t        toggle theme",
               "esc      close composer / clear search",
@@ -493,8 +573,10 @@ export function App(): JSX.Element {
         selectedIdx,
         pendingStars,
         pendingSnoozes,
+        pendingTrashes,
         toggleStar,
         pickSnooze,
+        toggleTrash,
         openCompose,
         replyToCurrent,
         toggle,
@@ -528,6 +610,7 @@ export function App(): JSX.Element {
         sentCount={sentMessageCount}
         starredCount={starredThreadCount}
         snoozedCount={snoozedThreadCount}
+        trashedCount={trashedThreadCount}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
@@ -550,6 +633,8 @@ export function App(): JSX.Element {
         onToggleStar={toggleStar}
         pendingSnoozes={pendingSnoozes}
         onPickSnooze={pickSnooze}
+        pendingTrashes={pendingTrashes}
+        onToggleTrash={toggleTrash}
       />
       {pane.mode === "reader" ? (
         (() => {
@@ -567,6 +652,10 @@ export function App(): JSX.Element {
               : snoozePending !== undefined
                 ? snoozePending
                 : t.snoozedUntil;
+          const trashPending =
+            t === null ? undefined : pendingTrashes.get(t.rootKey);
+          const trashFilled =
+            t === null ? false : (trashPending ?? t.trashed);
           return (
             <Reader
               // key remounts the Reader on thread change so the in-card
@@ -585,6 +674,9 @@ export function App(): JSX.Element {
               onPickSnooze={pickSnooze}
               snoozePickerOpen={readerSnoozePickerOpen}
               onSnoozePickerOpenChange={setReaderSnoozePickerOpen}
+              trashFilled={trashFilled}
+              trashPending={trashPending !== undefined}
+              onToggleTrash={toggleTrash}
             />
           );
         })()

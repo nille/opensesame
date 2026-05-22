@@ -1266,3 +1266,87 @@
   border-color: var(--accent-soft);
   color: var(--accent);
 }
+
+/* ============================================================
+   TRASH (slice 8.12, ADR-0030)
+   ============================================================
+ *
+ * Trash mirrors star one-for-one — same gutter / header variants, same
+ * pending / disabled handling. The icon uses the danger tint so the
+ * "trashed" state reads as a stronger signal than star or snooze, which
+ * matches the ADR's view-visibility rule (trash hides everywhere except
+ * the Trash view).
+ */
+
+.trash {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.trash:hover:not(.trash--disabled) {
+  color: var(--ink);
+}
+
+.trash--on {
+  color: var(--danger);
+  opacity: 1;
+}
+
+.trash--on:hover:not(.trash--disabled) {
+  color: var(--danger);
+  filter: brightness(1.05);
+}
+
+.trash--pending {
+  opacity: 0.65;
+}
+
+.trash--disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+  opacity: 0.4;
+}
+
+.trash--gutter {
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+}
+.inbox-row:hover .trash--gutter,
+.inbox-row .trash--gutter.trash--on,
+.inbox-row .trash--gutter.trash--pending {
+  opacity: 1;
+}
+.inbox-row .trash--gutter.trash--disabled {
+  opacity: 0;
+}
+.inbox-row:hover .trash--gutter.trash--disabled {
+  opacity: 0.25;
+}
+
+.trash--header {
+  opacity: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.trash--header:hover:not(.trash--disabled) {
+  background: var(--paper-2);
+}
+
+/* Trashed chip on the inbox row meta strip — uses the danger-soft tint
+   to read as a stronger signal than the snoozed chip's accent-soft. */
+.inbox-row__chip--trashed {
+  border-color: var(--danger-soft);
+  color: var(--danger);
+}

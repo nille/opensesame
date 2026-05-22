@@ -6,6 +6,7 @@ import {
   parseSendEmailInput,
   parseSnoozeThreadInput,
   parseStarThreadInput,
+  parseTrashThreadInput,
 } from "../src/bff/schemas.js";
 
 // Hand-rolled parser tests (ADR-0021). Each parser must:
@@ -442,5 +443,75 @@ describe("parseSnoozeThreadInput (ADR-0029)", () => {
     expect(parseSnoozeThreadInput(null, NOW).ok).toBe(false);
     expect(parseSnoozeThreadInput([], NOW).ok).toBe(false);
     expect(parseSnoozeThreadInput("hello", NOW).ok).toBe(false);
+  });
+});
+
+describe("parseTrashThreadInput (ADR-0030)", () => {
+  it("accepts a valid {thread_id, trashed: true} body", () => {
+    const r = parseTrashThreadInput({
+      thread_id: "<root@example.com>",
+      trashed: true,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        thread_id: "<root@example.com>",
+        trashed: true,
+      });
+    }
+  });
+
+  it("accepts {trashed: false} for untrashing", () => {
+    const r = parseTrashThreadInput({
+      thread_id: "<root@example.com>",
+      trashed: false,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.trashed).toBe(false);
+  });
+
+  it("rejects a missing thread_id", () => {
+    const r = parseTrashThreadInput({ trashed: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty thread_id with code=missing", () => {
+    const r = parseTrashThreadInput({ thread_id: "", trashed: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing trashed with code=missing", () => {
+    const r = parseTrashThreadInput({ thread_id: "<root@example.com>" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("trashed");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a non-boolean trashed", () => {
+    const r = parseTrashThreadInput({
+      thread_id: "<root@example.com>",
+      trashed: "yes",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("trashed");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseTrashThreadInput(null).ok).toBe(false);
+    expect(parseTrashThreadInput([]).ok).toBe(false);
+    expect(parseTrashThreadInput("hello").ok).toBe(false);
   });
 });

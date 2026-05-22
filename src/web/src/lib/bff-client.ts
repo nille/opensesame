@@ -134,6 +134,10 @@ export type InboxRowOk = {
   // snoozed", so a fresh inbound reply (no snoozed_until) auto-wakes the
   // conversation.
   snoozed_until: string | null;
+  // ADR-0030 (slice 8.12): per-row sparse trash annotation. null on rows
+  // never trashed. groupIntoThreads aggregates "every row stamped → trashed",
+  // so a fresh inbound reply auto-resurfaces the conversation in the inbox.
+  trashed_at: string | null;
 };
 
 export type InboxRowFailed = {
@@ -201,6 +205,21 @@ export type SnoozeThreadResult = {
   updated_count: number;
 };
 
+// ADR-0030 (slice 8.12): toggle the trash annotation on every row in the
+// thread. Wire shape mirrors star — boolean toggle. The result echoes
+// trashed_at so optimistic UI can render the chip without a refetch.
+export type TrashThreadInput = {
+  thread_id: string;
+  trashed: boolean;
+};
+
+export type TrashThreadResult = {
+  thread_id: string;
+  trashed: boolean;
+  trashed_at: string | null;
+  updated_count: number;
+};
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -244,6 +263,8 @@ export type ReadMessageOk = {
   starred_at: string | null;
   // ADR-0029 (slice 8.11): per-row sparse snooze wake-time.
   snoozed_until: string | null;
+  // ADR-0030 (slice 8.12): per-row sparse trash annotation.
+  trashed_at: string | null;
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -345,6 +366,9 @@ export const bff = {
     input: SnoozeThreadInput,
   ): Promise<RpcResult<SnoozeThreadResult>> {
     return call<SnoozeThreadResult>("snooze_thread", input);
+  },
+  trashThread(input: TrashThreadInput): Promise<RpcResult<TrashThreadResult>> {
+    return call<TrashThreadResult>("trash_thread", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

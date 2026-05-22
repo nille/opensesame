@@ -44,6 +44,7 @@ function row(
     thread_id: null,
     starred_at: null,
     snoozed_until: null,
+    trashed_at: null,
     ...partial,
   };
 }
@@ -737,6 +738,135 @@ describe("groupIntoThreads", () => {
       const out = groupIntoThreads(rows, NOW);
       expect(out[0]!.snoozed).toBe(false);
       expect(out[0]!.snoozedUntil).toBeNull();
+    });
+  });
+
+  // ADR-0030 (slice 8.12). Thread.trashed is per-row AND of trashed_at —
+  // wake-on-reply falls out for free, since a fresh inbound row arrives
+  // with trashed_at=null and the every-row predicate short-circuits to
+  // false. A thread of skeletons-only is not trashed.
+  describe("Thread.trashed aggregation (ADR-0030 / slice 8.12)", () => {
+    const NOW = new Date("2026-05-22T10:00:00.000Z");
+    const STAMP_EARLY = "2026-05-22T09:00:00.000Z";
+    const STAMP_LATE = "2026-05-22T09:30:00.000Z";
+
+    it("returns false when no row carries trashed_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
+    });
+
+    it("returns true when every row carries trashed_at", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          trashed_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          trashed_at: STAMP_LATE,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(true);
+    });
+
+    it("wake-on-reply: a single unstamped row resurfaces the thread (auto-untrash)", () => {
+      // Two rows trashed; a fresh inbound reply lands without trashed_at
+      // (the trash fan-out happened before this row existed). The thread
+      // must read as not trashed even though older rows are stamped.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          trashed_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          trashed_at: STAMP_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000C",
+          received_at: "2026-05-22T09:30:00.000Z",
+          message_id: "<r2@example.com>",
+          references: "<root@example.com>",
+          trashed_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
+    });
+
+    it("an outbound row without trashed_at also resurfaces the thread (operator replied)", () => {
+      // The operator can reply to a trashed thread (shouldn't happen via UI
+      // since trash hides it, but the rule is symmetric with snooze). Send
+      // produces a fresh row with no trashed_at — same wake-on-reply rule.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          direction: "in",
+          trashed_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<myreply@example.com>",
+          references: "<root@example.com>",
+          direction: "out",
+          trashed_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
+      expect(out[0]!.hasOutbound).toBe(true);
+    });
+
+    it("a parse-failed singleton thread reads as not trashed (skeleton can't be trashed)", () => {
+      const rows: InboxRow[] = [
+        failed("01H0000000000000000000A", "2026-05-20T10:00:00.000Z"),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
+    });
+
+    it("survives a partial-fanout state where only some rows carry trashed_at (every-row predicate is strict)", () => {
+      // After trash_thread, a phantom row's conditional check failed and
+      // didn't get stamped. The thread must NOT read as trashed — that's
+      // what protects wake-on-reply: any unstamped row → not trashed.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          trashed_at: STAMP_EARLY,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          trashed_at: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.trashed).toBe(false);
     });
   });
 });

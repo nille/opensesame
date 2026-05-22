@@ -53,6 +53,12 @@ export interface Thread {
   // snoozed. Drives the "snoozed until 9am" affordance and the Snoozed
   // sidebar's ascending sort.
   snoozedUntil: string | null;
+  // ADR-0030 (slice 8.12): true iff every parsed row carries a
+  // `trashed_at` timestamp. Same every-row aggregation as snooze (without
+  // the expiry check) — a fresh inbound reply lands without `trashed_at`
+  // and the thread auto-resurfaces in the inbox. A skeleton-only thread
+  // is never trashed (rows.length === 0 → false).
+  trashed: boolean;
   // rows.length + failedRows.length. >1 means render the count chip.
   count: number;
 }
@@ -98,18 +104,21 @@ export function groupIntoThreads(
       starred: false,
       snoozed: false,
       snoozedUntil: null,
+      trashed: false,
       count: 1,
     };
     buckets.set(key, t);
   }
 
   const threads = Array.from(buckets.values());
-  // Snooze aggregation needs the full row set per thread, so compute it as
-  // a final pass once upsert has finished collecting rows (vs star/unread
-  // which are short-circuit OR and can be computed during upsert).
+  // Snooze and trash aggregation need the full row set per thread, so
+  // compute them as a final pass once upsert has finished collecting rows
+  // (vs star/unread which are short-circuit OR and can be computed during
+  // upsert).
   const nowMs = now.getTime();
   for (const t of threads) {
     annotateSnooze(t, nowMs);
+    annotateTrash(t);
   }
   // Sort newest-first by the thread's most-recent message.
   threads.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
@@ -154,6 +163,24 @@ function annotateSnooze(t: Thread, nowMs: number): void {
   t.snoozedUntil = earliest;
 }
 
+// trashed iff every parsed row carries `trashed_at`. A thread of skeletons
+// only is not trashed (rows.length === 0 → false). Wake-on-reply: a single
+// unstamped row resurfaces the conversation, same shape as snooze without
+// the expiry check.
+function annotateTrash(t: Thread): void {
+  if (t.rows.length === 0) {
+    t.trashed = false;
+    return;
+  }
+  for (const r of t.rows) {
+    if (r.trashed_at === null) {
+      t.trashed = false;
+      return;
+    }
+  }
+  t.trashed = true;
+}
+
 function upsert(
   buckets: Map<string, Thread>,
   key: string,
@@ -172,6 +199,7 @@ function upsert(
       starred: false,
       snoozed: false,
       snoozedUntil: null,
+      trashed: false,
       count: 0,
     };
     buckets.set(key, t);

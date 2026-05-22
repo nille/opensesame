@@ -3,10 +3,10 @@ import { QueryCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
 import { makeDynamoMessageReader } from "../src/aws/dynamodb-reader.js";
 
-// star_thread (ADR-0028) is a fan-out write: Query ThreadIdGSI for every row
-// in the thread, then per-row conditional UpdateItem to SET/REMOVE starred_at.
-// The conditional `attribute_exists(#addr)` guards against phantom rows from
-// stale GSI projections; ConditionalCheckFailed is tolerated per-row.
+// trash_thread (ADR-0030) is a fan-out write: Query ThreadIdGSI for every row
+// in the thread, then per-row conditional UpdateItem to SET/REMOVE
+// trashed_at. Mirrors the star_thread shape (one RCU per row on the GSI
+// projection, MAX_THREAD_LIMIT cap, ConditionalCheckFailed tolerance).
 
 const TABLES = {
   messagesTable: "Messages-test",
@@ -25,8 +25,8 @@ function makeStubClient(
 
 const NOW = new Date("2026-05-22T10:00:00.000Z");
 
-describe("DynamoMessageReader.starThread (ADR-0028)", () => {
-  it("queries ThreadIdGSI and stamps starred_at on every row in the thread", async () => {
+describe("DynamoMessageReader.trashThread (ADR-0030)", () => {
+  it("queries ThreadIdGSI and stamps trashed_at on every row in the thread", async () => {
     const updates: UpdateCommand[] = [];
     let queryInput: Record<string, unknown> | null = null;
     const client = makeStubClient(async (cmd) => {
@@ -43,15 +43,17 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
         updates.push(cmd);
         return {};
       }
-      throw new Error(`unexpected: ${(cmd as { constructor: { name: string } }).constructor.name}`);
+      throw new Error(
+        `unexpected: ${(cmd as { constructor: { name: string } }).constructor.name}`,
+      );
     });
     const reader = makeDynamoMessageReader({
       client: client as never,
       ...TABLES,
     });
 
-    const result = await reader.starThread(
-      { thread_id: "<root@example.com>", starred: true },
+    const result = await reader.trashThread(
+      { thread_id: "<root@example.com>", trashed: true },
       NOW,
     );
 
@@ -71,7 +73,7 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
       expect(u.input.ConditionExpression).toBe("attribute_exists(#addr)");
       expect(u.input.ExpressionAttributeNames).toEqual({
         "#addr": "address",
-        "#attr": "starred_at",
+        "#attr": "trashed_at",
       });
       expect(u.input.ExpressionAttributeValues).toEqual({
         ":val": "2026-05-22T10:00:00.000Z",
@@ -79,13 +81,13 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
     }
     expect(result).toEqual({
       thread_id: "<root@example.com>",
-      starred: true,
-      starred_at: "2026-05-22T10:00:00.000Z",
+      trashed: true,
+      trashed_at: "2026-05-22T10:00:00.000Z",
       updated_count: 2,
     });
   });
 
-  it("issues REMOVE starred_at on every row when unstarring", async () => {
+  it("issues REMOVE trashed_at on every row when untrashing", async () => {
     const updates: UpdateCommand[] = [];
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof QueryCommand) {
@@ -106,8 +108,8 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
       ...TABLES,
     });
 
-    const result = await reader.starThread(
-      { thread_id: "<root@example.com>", starred: false },
+    const result = await reader.trashThread(
+      { thread_id: "<root@example.com>", trashed: false },
       NOW,
     );
 
@@ -118,21 +120,19 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
     );
     expect(updates[0]!.input.ExpressionAttributeNames).toEqual({
       "#addr": "address",
-      "#attr": "starred_at",
+      "#attr": "trashed_at",
     });
     // No :val binding for REMOVE.
     expect(updates[0]!.input.ExpressionAttributeValues).toBeUndefined();
     expect(result).toEqual({
       thread_id: "<root@example.com>",
-      starred: false,
-      starred_at: null,
+      trashed: false,
+      trashed_at: null,
       updated_count: 1,
     });
   });
 
   it("returns updated_count: 0 when ThreadIdGSI yields no rows (empty thread)", async () => {
-    // Stale inbox-window rollups can call star on a thread whose only row was
-    // deleted. The dispatcher returns 200 with 0 — UI can swallow as no-op.
     let updateCount = 0;
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof QueryCommand) return { Items: [] };
@@ -147,16 +147,16 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
       ...TABLES,
     });
 
-    const result = await reader.starThread(
-      { thread_id: "<orphan@example.com>", starred: true },
+    const result = await reader.trashThread(
+      { thread_id: "<orphan@example.com>", trashed: true },
       NOW,
     );
 
     expect(updateCount).toBe(0);
     expect(result).toEqual({
       thread_id: "<orphan@example.com>",
-      starred: true,
-      starred_at: "2026-05-22T10:00:00.000Z",
+      trashed: true,
+      trashed_at: "2026-05-22T10:00:00.000Z",
       updated_count: 0,
     });
   });
@@ -174,8 +174,8 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
       client: client as never,
       ...TABLES,
     });
-    await reader.starThread(
-      { thread_id: "<huge@example.com>", starred: true },
+    await reader.trashThread(
+      { thread_id: "<huge@example.com>", trashed: true },
       NOW,
     );
     expect(captured).not.toBeNull();
@@ -183,9 +183,6 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
   });
 
   it("tolerates per-row ConditionalCheckFailed (phantom row) but counts the survivors", async () => {
-    // Stale GSI projection can include a row that's been deleted out from
-    // under us. attribute_exists(#addr) makes the conditional fail; the
-    // adapter swallows that one row and finishes the rest.
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof QueryCommand) {
         return {
@@ -197,7 +194,6 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
         };
       }
       if (cmd instanceof UpdateCommand) {
-        // Second row is the phantom — fail the conditional only there.
         if (cmd.input.Key?.["internal_id"] === "01KS500000000000000000A002") {
           throw new ConditionalCheckFailedException({
             $metadata: {},
@@ -213,13 +209,13 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
       ...TABLES,
     });
 
-    const result = await reader.starThread(
-      { thread_id: "<root@example.com>", starred: true },
+    const result = await reader.trashThread(
+      { thread_id: "<root@example.com>", trashed: true },
       NOW,
     );
 
     expect(result.updated_count).toBe(2);
-    expect(result.starred_at).toBe("2026-05-22T10:00:00.000Z");
+    expect(result.trashed_at).toBe("2026-05-22T10:00:00.000Z");
   });
 
   it("propagates non-conditional errors (e.g. throttling) instead of swallowing them", async () => {
@@ -242,8 +238,8 @@ describe("DynamoMessageReader.starThread (ADR-0028)", () => {
     });
 
     await expect(
-      reader.starThread(
-        { thread_id: "<root@example.com>", starred: true },
+      reader.trashThread(
+        { thread_id: "<root@example.com>", trashed: true },
         NOW,
       ),
     ).rejects.toThrow("ProvisionedThroughputExceeded");

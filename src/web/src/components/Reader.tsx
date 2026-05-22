@@ -19,6 +19,7 @@ import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { useKeyboard } from "../hooks/useKeyboard.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
+import { TrashButton } from "./Trash.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -49,6 +50,11 @@ interface ReaderProps {
   // alongside the visible reader-header button.
   snoozePickerOpen: boolean;
   onSnoozePickerOpenChange: (open: boolean) => void;
+  // Slice 8.12. Trash mirrors star — boolean toggle, pending intent wins,
+  // disabled for legacy threads (no server thread_id).
+  trashFilled: boolean;
+  trashPending: boolean;
+  onToggleTrash: (rootKey: string, next: boolean) => void;
 }
 
 // Slice 8.6: the reader pane renders the whole conversation. Subject sits at
@@ -74,6 +80,9 @@ export function Reader({
   onPickSnooze,
   snoozePickerOpen,
   onSnoozePickerOpenChange,
+  trashFilled,
+  trashPending,
+  onToggleTrash,
 }: ReaderProps): JSX.Element {
   if (thread === null) {
     return (
@@ -118,6 +127,9 @@ export function Reader({
       onPickSnooze={onPickSnooze}
       snoozePickerOpen={snoozePickerOpen}
       onSnoozePickerOpenChange={onSnoozePickerOpenChange}
+      trashFilled={trashFilled}
+      trashPending={trashPending}
+      onToggleTrash={onToggleTrash}
     />
   );
 }
@@ -136,6 +148,9 @@ interface ThreadReaderProps {
   onPickSnooze: (rootKey: string, snoozedUntil: string | null) => void;
   snoozePickerOpen: boolean;
   onSnoozePickerOpenChange: (open: boolean) => void;
+  trashFilled: boolean;
+  trashPending: boolean;
+  onToggleTrash: (rootKey: string, next: boolean) => void;
 }
 
 function ThreadReader({
@@ -152,6 +167,9 @@ function ThreadReader({
   onPickSnooze,
   snoozePickerOpen,
   onSnoozePickerOpenChange,
+  trashFilled,
+  trashPending,
+  onToggleTrash,
 }: ThreadReaderProps): JSX.Element {
   // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
   // (rootKey starts with "<"), fetch the full thread via list_thread_messages
@@ -260,6 +278,14 @@ function ThreadReader({
             controlledOpen={snoozePickerOpen}
             onOpenChange={onSnoozePickerOpenChange}
           />
+          <TrashButton
+            filled={trashFilled}
+            pending={trashPending}
+            disabled={!threadable}
+            variant="header"
+            size={18}
+            onToggle={(next) => onToggleTrash(thread.rootKey, next)}
+          />
         </div>
         <div className="reader__threadmeta mono faint">
           {rows.length + thread.failedRows.length}{" "}
@@ -270,6 +296,7 @@ function ThreadReader({
           {snoozedUntil !== null
             ? " · snoozed until " + formatSnoozedUntil(snoozedUntil)
             : ""}
+          {trashFilled ? " · trashed" : ""}
         </div>
       </header>
       <div className="reader__stack">

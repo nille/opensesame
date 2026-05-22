@@ -586,6 +586,42 @@ export function parseSnoozeThreadInput(
   return ok({ thread_id: threadId, snoozed_until: raw });
 }
 
+// ---- trash_thread (ADR-0030) ----
+//
+// Toggle the trash (soft-delete) annotation on every row in a thread.
+// Wire shape mirrors star: a boolean toggle, not a nullable timestamp.
+// Re-trashing overwrites the on-row `trashed_at`; untrashing removes
+// the attribute. The fan-out lives in the reader; the schema only
+// validates wire shape.
+
+export type TrashThreadInput = {
+  thread_id: string;
+  trashed: boolean;
+};
+
+export function parseTrashThreadInput(
+  body: unknown,
+): ParseResult<TrashThreadInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  if (obj["trashed"] === undefined) {
+    return fail("trashed", "missing", "trashed is required");
+  }
+  if (typeof obj["trashed"] !== "boolean") {
+    return fail("trashed", "invalid_type", "trashed must be a boolean");
+  }
+
+  return ok({ thread_id: threadId, trashed: obj["trashed"] });
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

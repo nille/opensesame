@@ -43,6 +43,7 @@ import {
   parseSendEmailInput,
   parseSnoozeThreadInput,
   parseStarThreadInput,
+  parseTrashThreadInput,
   type ParseError,
   type SendEmailInput,
 } from "./schemas.js";
@@ -112,6 +113,8 @@ export async function dispatch(
       return handleStarThread(deps, body);
     case "snooze_thread":
       return handleSnoozeThread(deps, body);
+    case "trash_thread":
+      return handleTrashThread(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -473,6 +476,24 @@ async function handleSnoozeThread(
 
   try {
     const result = await deps.reader.snoozeThread(parsed.value, now);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0030 (slice 8.12). Same status-code shape as star_thread / snooze_thread
+// — empty thread is a 200 no-op rather than 404. Wire shape mirrors
+// star_thread (boolean toggle, not a nullable timestamp).
+async function handleTrashThread(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseTrashThreadInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  try {
+    const result = await deps.reader.trashThread(parsed.value, new Date());
     return ok(result);
   } catch (err) {
     return internalError(err);

@@ -6,7 +6,7 @@ import { makeDynamoMessageReader } from "../src/aws/dynamodb-reader.js";
 // snooze_thread (ADR-0029) is a fan-out write: Query ThreadIdGSI for every row
 // in the thread, then per-row conditional UpdateItem to SET/REMOVE
 // snoozed_until. Mirrors the star_thread shape (one RCU per row on the GSI
-// projection, MAX_STAR_FAN_OUT cap, ConditionalCheckFailed tolerance).
+// projection, MAX_THREAD_LIMIT cap, ConditionalCheckFailed tolerance).
 // Past-time validation lives in the BFF schema; the reader trusts its input.
 
 const TABLES = {
@@ -71,10 +71,13 @@ describe("DynamoMessageReader.snoozeThread (ADR-0029)", () => {
     expect(updates).toHaveLength(2);
     for (const u of updates) {
       expect(u.input.TableName).toBe(TABLES.messagesTable);
-      expect(u.input.UpdateExpression).toBe("SET snoozed_until = :wake");
+      expect(u.input.UpdateExpression).toBe("SET #attr = :val");
       expect(u.input.ConditionExpression).toBe("attribute_exists(#addr)");
-      expect(u.input.ExpressionAttributeNames).toEqual({ "#addr": "address" });
-      expect(u.input.ExpressionAttributeValues).toEqual({ ":wake": WAKE_AT });
+      expect(u.input.ExpressionAttributeNames).toEqual({
+        "#addr": "address",
+        "#attr": "snoozed_until",
+      });
+      expect(u.input.ExpressionAttributeValues).toEqual({ ":val": WAKE_AT });
     }
     expect(result).toEqual({
       thread_id: "<root@example.com>",
@@ -110,11 +113,15 @@ describe("DynamoMessageReader.snoozeThread (ADR-0029)", () => {
     );
 
     expect(updates).toHaveLength(1);
-    expect(updates[0]!.input.UpdateExpression).toBe("REMOVE snoozed_until");
+    expect(updates[0]!.input.UpdateExpression).toBe("REMOVE #attr");
     expect(updates[0]!.input.ConditionExpression).toBe(
       "attribute_exists(#addr)",
     );
-    // No :wake binding for REMOVE.
+    expect(updates[0]!.input.ExpressionAttributeNames).toEqual({
+      "#addr": "address",
+      "#attr": "snoozed_until",
+    });
+    // No :val binding for REMOVE.
     expect(updates[0]!.input.ExpressionAttributeValues).toBeUndefined();
     expect(result).toEqual({
       thread_id: "<root@example.com>",
@@ -151,7 +158,7 @@ describe("DynamoMessageReader.snoozeThread (ADR-0029)", () => {
     });
   });
 
-  it("caps the GSI query at MAX_STAR_FAN_OUT (200) — bounded write cost", async () => {
+  it("caps the GSI query at MAX_THREAD_LIMIT (200) — bounded write cost", async () => {
     let captured: Record<string, unknown> | null = null;
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof QueryCommand) {

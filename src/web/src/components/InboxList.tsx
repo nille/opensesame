@@ -8,6 +8,7 @@ import {
 import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
+import { TrashButton } from "./Trash.tsx";
 
 interface InboxListProps {
   threads: Thread[];
@@ -28,6 +29,10 @@ interface InboxListProps {
   // optimistic snooze indicator + meta-strip footer.
   pendingSnoozes: Map<string, string | null>;
   onPickSnooze: (rootKey: string, snoozedUntil: string | null) => void;
+  // Slice 8.12 (ADR-0030). Boolean toggle, same shape as pendingStars —
+  // pending intent wins over server `trashed` for the icon and chip.
+  pendingTrashes: Map<string, boolean>;
+  onToggleTrash: (rootKey: string, next: boolean) => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -45,6 +50,8 @@ export function InboxList({
   onToggleStar,
   pendingSnoozes,
   onPickSnooze,
+  pendingTrashes,
+  onToggleTrash,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -138,6 +145,9 @@ export function InboxList({
         const pendingSnooze = pendingSnoozes.get(thread.rootKey);
         const snoozedUntil =
           pendingSnooze !== undefined ? pendingSnooze : thread.snoozedUntil;
+        // Trash: pending intent wins over server state, same posture as star.
+        const pendingTrash = pendingTrashes.get(thread.rootKey);
+        const trashFilled = pendingTrash ?? thread.trashed;
 
         return (
           <div
@@ -179,6 +189,14 @@ export function InboxList({
                 stopPropagation
                 onPickPreset={(next) => onPickSnooze(thread.rootKey, next)}
               />
+              <TrashButton
+                filled={trashFilled}
+                pending={pendingTrash !== undefined}
+                disabled={!threadable}
+                variant="gutter"
+                stopPropagation
+                onToggle={(next) => onToggleTrash(thread.rootKey, next)}
+              />
             </div>
             <div className="inbox-row__main">
               <div className="inbox-row__top">
@@ -200,6 +218,12 @@ export function InboxList({
                   <span className="inbox-row__chip inbox-row__chip--snoozed mono">
                     {" "}
                     snoozed · {formatSnoozedUntil(snoozedUntil)}
+                  </span>
+                ) : null}
+                {trashFilled ? (
+                  <span className="inbox-row__chip inbox-row__chip--trashed mono">
+                    {" "}
+                    trashed
                   </span>
                 ) : null}
               </div>
