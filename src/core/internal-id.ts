@@ -54,3 +54,22 @@ export function makeInternalIdLowerBound(iso: string): string {
   }
   return encodeUlid(ms, new Uint8Array(RANDOM_BYTES));
 }
+
+// Upper bound on internal_id for a given ISO timestamp. Symmetric counterpart
+// to makeInternalIdLowerBound — the lex-largest random tail in Crockford
+// base32 is "ZZZZZZZZZZZZZZZZ" (decimal 31 in every byte). Used by
+// search_email(until) to push the upper-bound filter into the KeyCondition.
+//
+// `internal_id < makeInternalIdUpperBound(iso)` matches "strictly before iso"
+// up to ms granularity; `internal_id <= makeInternalIdUpperBound(iso)` would
+// include ms-equal rows from `iso` itself.
+export function makeInternalIdUpperBound(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) {
+    throw new RangeError(
+      `makeInternalIdUpperBound: iso must be ISO-8601, got ${JSON.stringify(iso)}`,
+    );
+  }
+  const tail = new Uint8Array(RANDOM_BYTES).fill(0xff);
+  return encodeUlid(ms, tail);
+}

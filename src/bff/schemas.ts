@@ -168,6 +168,104 @@ export function parseMarkReadInput(body: unknown): ParseResult<MarkReadInput> {
   return ok({ kind: "by_message_id", message_id: id });
 }
 
+// ---- search_email ----
+//
+// Per ADR-0007: address + query are required, structured filters and time
+// bounds optional. The query is the substring; structured filters (from,
+// to, subject) AND-compose with it. since/until use ISO-8601 same as
+// listInbox. Empty query is rejected — readInbox is the right tool for
+// "give me everything", not search_email with an empty filter.
+
+export type SearchEmailInput = {
+  address: string;
+  query: string;
+  limit?: number;
+  cursor?: string;
+  since?: string;
+  until?: string;
+  from?: string;
+  to?: string;
+  subject?: string;
+};
+
+export function parseSearchEmailInput(
+  body: unknown,
+): ParseResult<SearchEmailInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+
+  const query = expectString(obj["query"]);
+  if (query === null) {
+    return fail(
+      "query",
+      obj["query"] === undefined ? "missing" : "invalid_type",
+      "query must be a non-empty string",
+    );
+  }
+  if (query.length === 0) {
+    return fail("query", "invalid_value", "query must be a non-empty string");
+  }
+
+  const out: SearchEmailInput = { address, query };
+
+  if (obj["limit"] !== undefined) {
+    const n = obj["limit"];
+    if (
+      typeof n !== "number" ||
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n <= 0
+    ) {
+      return fail("limit", "invalid_value", "limit must be a positive integer");
+    }
+    out.limit = n;
+  }
+
+  if (obj["cursor"] !== undefined) {
+    const c = expectString(obj["cursor"]);
+    if (c === null) {
+      return fail("cursor", "invalid_type", "cursor must be a string");
+    }
+    out.cursor = c;
+  }
+
+  for (const f of ["since", "until"] as const) {
+    if (obj[f] !== undefined) {
+      const s = expectString(obj[f]);
+      if (s === null) {
+        return fail(f, "invalid_type", `${f} must be an ISO-8601 string`);
+      }
+      if (!Number.isFinite(Date.parse(s))) {
+        return fail(
+          f,
+          "invalid_value",
+          `${f} is not a parseable ISO-8601 timestamp`,
+        );
+      }
+      out[f] = s;
+    }
+  }
+
+  for (const f of ["from", "to", "subject"] as const) {
+    if (obj[f] !== undefined) {
+      const s = expectString(obj[f]);
+      if (s === null) {
+        return fail(f, "invalid_type", `${f} must be a string`);
+      }
+      out[f] = s;
+    }
+  }
+
+  return ok(out);
+}
+
 // ---- send_email ----
 
 export type SendEmailInput = {

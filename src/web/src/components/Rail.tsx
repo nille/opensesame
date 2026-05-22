@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import type { ChangeEvent, JSX, KeyboardEvent, Ref } from "react";
 import type { Theme } from "../hooks/useTheme.ts";
 import { formatPolledAt } from "../lib/format.ts";
 
@@ -15,6 +15,12 @@ interface RailProps {
   onChangeView: (view: RailView) => void;
   inboxCount: number;
   sentCount: number;
+  searchQuery: string;
+  onSearchChange: (q: string) => void;
+  searchInputRef?: Ref<HTMLInputElement>;
+  searching: boolean;
+  searchHitCount: number | null;
+  onSearchKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
 }
 
 // The rail isn't a sidebar with a logo. It's a path bar plus the views
@@ -32,8 +38,19 @@ export function Rail({
   onChangeView,
   inboxCount,
   sentCount,
+  searchQuery,
+  onSearchChange,
+  searchInputRef,
+  searching,
+  searchHitCount,
+  onSearchKeyDown,
 }: RailProps): JSX.Element {
-  const title = view === "inbox" ? "~/inbox" : "~/sent";
+  const searchActive = searchQuery.length > 0;
+  const title = searchActive
+    ? "~/search"
+    : view === "inbox"
+      ? "~/inbox"
+      : "~/sent";
   return (
     <aside className="rail">
       <div className="rail__head">
@@ -44,7 +61,62 @@ export function Rail({
         <div className="rail__mailbox mono faint">{mailbox}</div>
       </div>
 
-      <nav className="rail__nav">
+      <div
+        className={
+          "rail__search" + (searching ? " rail__search--searching" : "")
+        }
+      >
+        <span className="rail__search-prompt mono" aria-hidden>
+          /
+        </span>
+        <input
+          ref={searchInputRef}
+          type="search"
+          className="rail__search-input mono"
+          placeholder="search"
+          value={searchQuery}
+          onChange={(e: ChangeEvent<HTMLInputElement>) =>
+            onSearchChange(e.target.value)
+          }
+          onKeyDown={onSearchKeyDown}
+          aria-label="Search messages"
+          aria-busy={searching}
+          spellCheck={false}
+          autoComplete="off"
+        />
+        {searchActive ? (
+          <button
+            type="button"
+            className="rail__search-clear mono faint"
+            onClick={() => onSearchChange("")}
+            aria-label="Clear search"
+            title="Clear (esc)"
+          >
+            ×
+          </button>
+        ) : null}
+        {searching ? (
+          <span className="rail__search-progress" aria-hidden />
+        ) : null}
+      </div>
+      {searchActive ? (
+        <div
+          className={
+            "rail__search-status mono faint" +
+            (searching ? " rail__search-status--pulse" : "")
+          }
+          role="status"
+          aria-live="polite"
+        >
+          {searching
+            ? "searching…"
+            : searchHitCount === null
+              ? "no results yet"
+              : `${searchHitCount} ${searchHitCount === 1 ? "hit" : "hits"}`}
+        </div>
+      ) : null}
+
+      <nav className="rail__nav" aria-hidden={searchActive}>
         <button
           type="button"
           className={

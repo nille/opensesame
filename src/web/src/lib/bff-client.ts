@@ -124,6 +124,20 @@ export type ListInboxResult = {
   next_cursor: string | null;
 };
 
+export type SearchEmailInput = {
+  address: string;
+  query: string;
+  limit?: number;
+  cursor?: string;
+  since?: string;
+  until?: string;
+  from?: string;
+  to?: string;
+  subject?: string;
+};
+
+export type SearchEmailResult = ListInboxResult;
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -235,6 +249,9 @@ export const bff = {
   },
   markRead(input: MarkReadInput): Promise<RpcResult<MarkReadResult>> {
     return call<MarkReadResult>("mark_read", input);
+  },
+  searchEmail(input: SearchEmailInput): Promise<RpcResult<SearchEmailResult>> {
+    return call<SearchEmailResult>("search_email", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

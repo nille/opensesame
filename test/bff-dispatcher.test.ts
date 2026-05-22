@@ -26,6 +26,7 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       getByPrimaryKey: vi.fn(noop),
       markRead: vi.fn(noop),
       markReadByPrimaryKey: vi.fn(noop),
+      searchEmail: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -66,6 +67,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -91,6 +93,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -133,6 +136,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -220,6 +224,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -239,6 +244,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -297,6 +303,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -328,6 +335,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -395,6 +403,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -439,6 +448,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead,
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -461,6 +471,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead,
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -486,6 +497,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead,
         markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -512,6 +524,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead,
         markReadByPrimaryKey,
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -542,6 +555,7 @@ describe("dispatch", () => {
         getByPrimaryKey: vi.fn(),
         markRead: vi.fn(),
         markReadByPrimaryKey,
+        searchEmail: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -579,5 +593,51 @@ describe("dispatch", () => {
     // Don't leak the raw DDB message to the response body — it might
     // include conditional-expression internals or AWS request IDs.
     expect(JSON.stringify(r.body)).not.toContain("ddb conditional");
+  });
+
+  it("search_email: 400 when query is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/search_email", {
+      address: "alice@example.com",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "query",
+    });
+  });
+
+  it("search_email: 200 — forwards parsed input with nullable defaults filled in", async () => {
+    const searchEmail = vi.fn(async () => ({
+      messages: [],
+      next_cursor: null,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/search_email", {
+      address: "alice@example.com",
+      query: "invoice",
+      from: "bob@example.com",
+    });
+    expect(r.status).toBe(200);
+    expect(searchEmail).toHaveBeenCalledWith({
+      address: "alice@example.com",
+      query: "invoice",
+      limit: 50,
+      cursor: null,
+      since: null,
+      until: null,
+      from: "bob@example.com",
+      to: null,
+      subject: null,
+    });
+    expect(r.body).toEqual({ messages: [], next_cursor: null });
   });
 });

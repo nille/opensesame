@@ -5,7 +5,10 @@ import {
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { ConditionalCheckFailedException } from "@aws-sdk/client-dynamodb";
-import { makeInternalIdLowerBound } from "../core/internal-id.js";
+import {
+  makeInternalIdLowerBound,
+  makeInternalIdUpperBound,
+} from "../core/internal-id.js";
 import { assembleBody, type StoredChunk } from "../core/reader.js";
 import type {
   InboxRow,
@@ -19,6 +22,8 @@ import type {
   ReadMessage,
   ReadMessageFailed,
   ReadMessageOk,
+  SearchEmailInput,
+  SearchEmailResult,
   StoredAttachment,
   StoredMessageHeaders,
 } from "../core/store.js";
@@ -49,6 +54,7 @@ export function makeDynamoMessageReader(
     markRead: (messageId, now) => markRead(deps, messageId, now),
     markReadByPrimaryKey: (address, internalId, now) =>
       markReadByPrimaryKey(deps, address, internalId, now),
+    searchEmail: (input) => searchEmail(deps, input),
   };
 }
 
@@ -383,6 +389,163 @@ async function stampReadAt(
     }
     throw err;
   }
+}
+
+// search_email per ADR-0007 / ADR-0004.
+//
+// Strategy:
+//   1. Query the address partition newest-first, with KeyCondition narrowed
+//      by since/until (pushed down via internal_id bounds — same trick as
+//      listInbox(since)).
+//   2. Apply structured filters (from/to/subject) in DDB FilterExpression so
+//      they reduce network bytes; the substring `query` against the metadata
+//      attributes goes there too. DDB `contains()` is case-sensitive, so we
+//      lowercase both the query and the row attributes — but DDB has no
+//      tolower() in expressions, which means metadata-side case folding has
+//      to happen at write time. We don't have lowercased mirrors yet, so the
+//      header substring path stays case-sensitive in v1; the body fan-out
+//      below does its own case-folding in app code.
+//   3. For rows that didn't already match on metadata, fan out a per-message
+//      chunks Query with FilterExpression `contains(text, :q)`. A single
+//      match on any chunk promotes the row.
+//   4. Skeleton rows (parse_status=failed) cannot body-match (no chunks); they
+//      pass only when the structured filters + headers match.
+//   5. Cursor opacity matches listInbox — base64(LastEvaluatedKey).
+//
+// Latency budget per ADR-0004 is 3-10s. Body fan-out is the long pole; we
+// run it sequentially to keep DDB throughput predictable. A per-page cap on
+// fan-out (FAN_OUT_CAP) protects against pathological cases where every row
+// in a page misses on metadata.
+const FAN_OUT_CAP = 100;
+async function searchEmail(
+  deps: DynamoMessageReaderDeps,
+  input: SearchEmailInput,
+): Promise<SearchEmailResult> {
+  const exprValues: Record<string, unknown> = { ":addr": input.address };
+  let keyCond = "address = :addr";
+  if (input.since && input.until) {
+    exprValues[":since"] = makeInternalIdLowerBound(input.since);
+    exprValues[":until"] = makeInternalIdUpperBound(input.until);
+    keyCond = "address = :addr AND internal_id BETWEEN :since AND :until";
+  } else if (input.since) {
+    exprValues[":since"] = makeInternalIdLowerBound(input.since);
+    keyCond = "address = :addr AND internal_id > :since";
+  } else if (input.until) {
+    exprValues[":until"] = makeInternalIdUpperBound(input.until);
+    keyCond = "address = :addr AND internal_id < :until";
+  }
+
+  // Structured filters AND-compose; the free-text `query` ORs across the
+  // header attributes (any one match wins on metadata). Both go in
+  // FilterExpression.
+  const filters: string[] = [];
+  const exprNames: Record<string, string> = {};
+  if (input.from) {
+    exprValues[":from"] = input.from;
+    exprNames["#from"] = "from_raw";
+    filters.push("contains(#from, :from)");
+  }
+  if (input.to) {
+    exprValues[":to"] = input.to;
+    exprNames["#to"] = "to_raw";
+    filters.push("contains(#to, :to)");
+  }
+  if (input.subject) {
+    exprValues[":subj"] = input.subject;
+    exprNames["#subj"] = "subject";
+    filters.push("contains(#subj, :subj)");
+  }
+  // Don't push the free-text query into FilterExpression. DDB `contains`
+  // is case-sensitive and we want case-insensitive UX; metadata matching
+  // is repeated in app code below alongside the body fan-out, with a
+  // single case-folded path.
+
+  const out = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.messagesTable,
+      KeyConditionExpression: keyCond,
+      ExpressionAttributeValues: exprValues,
+      ExpressionAttributeNames:
+        Object.keys(exprNames).length > 0 ? exprNames : undefined,
+      FilterExpression: filters.length > 0 ? filters.join(" AND ") : undefined,
+      ScanIndexForward: false,
+      Limit: input.limit,
+      ExclusiveStartKey: input.cursor ? decodeCursor(input.cursor) : undefined,
+    }),
+  );
+
+  const candidates = out.Items ?? [];
+  const next_cursor = out.LastEvaluatedKey
+    ? encodeCursor(out.LastEvaluatedKey)
+    : null;
+  if (input.query === "") {
+    return { messages: candidates.map(projectInboxRow), next_cursor };
+  }
+
+  const q = input.query.toLowerCase();
+  const matched: InboxRow[] = [];
+  let bodyFanOut = 0;
+  for (const row of candidates) {
+    if (rowMatchesOnMetadata(row, q)) {
+      matched.push(projectInboxRow(row));
+      continue;
+    }
+    if (row["parse_status"] === "failed") continue;
+    if (bodyFanOut >= FAN_OUT_CAP) continue;
+    bodyFanOut += 1;
+    const internalId = String(row["internal_id"]);
+    const hit = await chunkMatches(deps, internalId, q);
+    if (hit) {
+      matched.push(projectInboxRow(row));
+    }
+  }
+  return { messages: matched, next_cursor };
+}
+
+// Case-insensitive substring check across the metadata attributes the UI
+// renders. `headers_blob` is included so header search per ADR-0004 still
+// works for headers we don't promote into a typed attribute (Received chains,
+// X-* customs, ARC signatures). All inputs lowercase-folded.
+function rowMatchesOnMetadata(
+  row: Record<string, unknown>,
+  qLower: string,
+): boolean {
+  const attrs = ["from_raw", "to_raw", "cc_raw", "subject", "snippet", "headers_blob"];
+  for (const attr of attrs) {
+    const v = row[attr];
+    if (typeof v === "string" && v.toLowerCase().includes(qLower)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Per-message body fan-out. Returns true on the first chunk that matches.
+// FilterExpression `contains` is case-sensitive, so we don't push the query
+// down — we Query the chunks and fold case in app code instead. Acceptable
+// per ADR-0004's latency budget at v1 mailbox sizes; the future SQLite-FTS
+// upgrade path replaces this entirely.
+async function chunkMatches(
+  deps: DynamoMessageReaderDeps,
+  internalId: string,
+  qLower: string,
+): Promise<boolean> {
+  const out = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.bodyChunksTable,
+      KeyConditionExpression: "internal_id = :id",
+      ExpressionAttributeValues: { ":id": internalId },
+      ProjectionExpression: "#text",
+      ExpressionAttributeNames: { "#text": "text" },
+    }),
+  );
+  for (const item of out.Items ?? []) {
+    const t = item["text"];
+    if (typeof t === "string" && t.toLowerCase().includes(qLower)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function encodeCursor(lek: Record<string, unknown>): string {

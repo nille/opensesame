@@ -21,13 +21,18 @@ import type {
   PresignAttachmentInput,
 } from "../core/attachment-store.js";
 import { makeAttachmentS3Key } from "../core/attachment-store.js";
-import type { MessageReader, ListInboxInput } from "../core/store.js";
+import type {
+  ListInboxInput,
+  MessageReader,
+  SearchEmailInput as ReaderSearchEmailInput,
+} from "../core/store.js";
 import { SuppressionBlockError } from "../core/suppression.js";
 import {
   parseGetAttachmentInput,
   parseGetMessageInput,
   parseMarkReadInput,
   parseReadInboxInput,
+  parseSearchEmailInput,
   parseSendEmailInput,
   type ParseError,
   type SendEmailInput,
@@ -81,6 +86,8 @@ export async function dispatch(
       return handleGetAttachment(deps, body);
     case "mark_read":
       return handleMarkRead(deps, body);
+    case "search_email":
+      return handleSearchEmail(deps, body);
     case "send_email":
       return handleSendEmail(deps, body);
     default:
@@ -256,6 +263,33 @@ async function handleMarkRead(
       read_at: result.read_at,
       already_read: result.kind === "already_read",
     });
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleSearchEmail(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseSearchEmailInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderSearchEmailInput = {
+    address: parsed.value.address,
+    query: parsed.value.query,
+    limit: parsed.value.limit ?? DEFAULT_INBOX_LIMIT,
+    cursor: parsed.value.cursor ?? null,
+    since: parsed.value.since ?? null,
+    until: parsed.value.until ?? null,
+    from: parsed.value.from ?? null,
+    to: parsed.value.to ?? null,
+    subject: parsed.value.subject ?? null,
+  };
+
+  try {
+    const result = await deps.reader.searchEmail(input);
+    return ok(result);
   } catch (err) {
     return internalError(err);
   }

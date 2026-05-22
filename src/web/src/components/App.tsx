@@ -1,8 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type JSX } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
 import { bff, type InboxRow, type RpcResult } from "../lib/bff-client.ts";
 import { useTheme } from "../hooks/useTheme.ts";
 import { useKeyboard } from "../hooks/useKeyboard.ts";
+import { useDebounced } from "../hooks/useDebounced.ts";
 import { Rail } from "./Rail.tsx";
 import { InboxList } from "./InboxList.tsx";
 import { Reader } from "./Reader.tsx";
@@ -25,6 +34,10 @@ export function App(): JSX.Element {
   const [pane, setPane] = useState<PaneState>({ mode: "reader", messageId: null });
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [lastPolledAt, setLastPolledAt] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const debouncedQuery = useDebounced(searchQuery.trim(), 220);
+  const searchActive = debouncedQuery.length > 0;
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", MAILBOX],
@@ -34,6 +47,16 @@ export function App(): JSX.Element {
       return r;
     },
     refetchInterval: POLL_MS,
+  });
+
+  // Search runs on a separate query keyed off the debounced input. Disabled
+  // until the user types — empty query is "show me the inbox", not a search.
+  const searchQueryResult = useQuery({
+    queryKey: ["search", MAILBOX, debouncedQuery],
+    queryFn: (): Promise<RpcResult<{ messages: InboxRow[]; next_cursor: string | null }>> =>
+      bff.searchEmail({ address: MAILBOX, query: debouncedQuery, limit: 50 }),
+    enabled: searchActive,
+    staleTime: 30_000,
   });
 
   // Split the single read_inbox result into the two views the rail offers.
@@ -58,9 +81,27 @@ export function App(): JSX.Element {
     [allMessages],
   );
 
-  const messages = view === "inbox" ? inboxMessages : sentMessages;
+  // Search results aren't filtered by direction — the operator wants every
+  // hit, in or out, ordered the same way DDB returned them (newest-first).
+  const searchMessages = useMemo<InboxRow[]>(() => {
+    const r = searchQueryResult.data;
+    if (!r || r.kind !== "ok") return [];
+    return r.value.messages;
+  }, [searchQueryResult.data]);
+
+  const messages = searchActive
+    ? searchMessages
+    : view === "inbox"
+      ? inboxMessages
+      : sentMessages;
 
   const offline = inboxQuery.data?.kind === "error";
+
+  const searchHitCount: number | null = searchActive
+    ? searchQueryResult.isFetching && searchQueryResult.data === undefined
+      ? null
+      : searchMessages.length
+    : null;
 
   // Keep the selection in range as the inbox refreshes.
   useEffect(() => {
@@ -70,11 +111,20 @@ export function App(): JSX.Element {
   }, [messages.length, selectedIdx]);
 
   // Switching views snaps to the top and re-opens the reader on first row.
+  // Also clears any active search — the rail nav is meaningless inside a
+  // search results list.
   const switchView = useCallback((next: View) => {
     setView(next);
     setSelectedIdx(0);
     setPane({ mode: "reader", messageId: null });
+    setSearchQuery("");
   }, []);
+
+  // Reset selection when the source list changes shape (entering / leaving
+  // search, or the search query itself changing).
+  useEffect(() => {
+    setSelectedIdx(0);
+  }, [searchActive, debouncedQuery]);
 
   // Sync the reader to the selected row when in reader mode.
   useEffect(() => {
@@ -129,16 +179,21 @@ export function App(): JSX.Element {
         } else if (e.key === "r") {
           e.preventDefault();
           replyToCurrent();
+        } else if (e.key === "/") {
+          e.preventDefault();
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
         } else if (e.key === "?") {
           e.preventDefault();
           alert(
             [
               "j / k    move selection",
               "enter    open message (auto-opened in reader)",
+              "/        focus search",
               "r        reply to current",
               "c        compose new",
               "t        toggle theme",
-              "esc      close composer",
+              "esc      close composer / clear search",
               "?        this cheat sheet",
             ].join("\n"),
           );
@@ -151,6 +206,16 @@ export function App(): JSX.Element {
     ),
     pane.mode !== "composer",
   );
+
+  // The rail's <input> swallows window keydown events (useKeyboard skips
+  // INPUT/TEXTAREA), so Escape-to-clear lives on the input itself.
+  const onSearchKeyDown = useCallback((e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setSearchQuery("");
+      searchInputRef.current?.blur();
+    }
+  }, []);
 
   return (
     <div className="app-shell">
@@ -165,13 +230,24 @@ export function App(): JSX.Element {
         onChangeView={switchView}
         inboxCount={inboxMessages.length}
         sentCount={sentMessages.length}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        searchInputRef={searchInputRef}
+        searching={searchActive && searchQueryResult.isFetching}
+        searchHitCount={searchHitCount}
+        onSearchKeyDown={onSearchKeyDown}
       />
       <InboxList
         messages={messages}
         selectedIdx={selectedIdx}
         onSelect={setSelectedIdx}
-        loading={inboxQuery.isLoading}
+        loading={
+          searchActive
+            ? searchQueryResult.isFetching && messages.length === 0
+            : inboxQuery.isLoading
+        }
         offline={offline}
+        searchActive={searchActive}
       />
       {pane.mode === "reader" ? (
         (() => {

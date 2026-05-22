@@ -12,6 +12,7 @@ interface InboxListProps {
   onSelect: (idx: number) => void;
   loading: boolean;
   offline: boolean;
+  searchActive?: boolean;
 }
 
 // Triage-fast inbox: ~36–44px row, unread dot in the gutter, sender as
@@ -24,6 +25,7 @@ export function InboxList({
   onSelect,
   loading,
   offline,
+  searchActive = false,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -52,11 +54,14 @@ export function InboxList({
   }
 
   if (messages.length === 0) {
+    const empty = offline
+      ? "0 messages · BFF unreachable"
+      : searchActive
+        ? "0 results · try a different query"
+        : "0 messages · waiting for new mail";
     return (
       <div className="inbox-list">
-        <div className="inbox-list__empty mono faint">
-          {offline ? "0 messages · BFF unreachable" : "0 messages · waiting for new mail"}
-        </div>
+        <div className="inbox-list__empty mono faint">{empty}</div>
       </div>
     );
   }

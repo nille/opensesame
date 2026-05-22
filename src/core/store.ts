@@ -181,6 +181,32 @@ export type ListInboxResult = {
   next_cursor: string | null;
 };
 
+// search_email per ADR-0007 / ADR-0004. `query` is the substring to match
+// across headers_blob and body chunks; structured filters (from/to/subject)
+// AND-compose with the substring match. since/until bound the time window via
+// internal_id, the same way listInbox's `since` does.
+//
+// Cursor pagination is opaque, mirroring listInbox: callers pass the prior
+// next_cursor to fetch the next page. Empty result + null cursor is the
+// terminal state. Substring matching is case-insensitive (ADR-0004 doesn't
+// pin case-folding, but operator UX expects it).
+export type SearchEmailInput = {
+  address: string;
+  query: string;
+  limit: number;
+  cursor?: string | null;
+  since?: string | null;
+  until?: string | null;
+  from?: string | null;
+  to?: string | null;
+  subject?: string | null;
+};
+
+export type SearchEmailResult = {
+  messages: InboxRow[];
+  next_cursor: string | null;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -215,4 +241,10 @@ export interface MessageReader {
     internalId: string,
     now: Date,
   ): Promise<MarkReadResult>;
+  // Substring search across one address's mail per ADR-0004. Latency budget
+  // is 3-10s and grows with mailbox size — implementations Query the address
+  // partition with FilterExpression for headers/snippet matches, then fan
+  // out per-message body-chunk Queries for any rows that didn't already
+  // match on metadata. Cursor opacity matches listInbox.
+  searchEmail(input: SearchEmailInput): Promise<SearchEmailResult>;
 }

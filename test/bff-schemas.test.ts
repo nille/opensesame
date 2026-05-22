@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   parseGetMessageInput,
   parseReadInboxInput,
+  parseSearchEmailInput,
   parseSendEmailInput,
 } from "../src/bff/schemas.js";
 
@@ -171,5 +172,85 @@ describe("parseSendEmailInput", () => {
     const r = parseSendEmailInput({ ...minimal, references: "not an array" });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.field).toBe("references");
+  });
+});
+
+describe("parseSearchEmailInput", () => {
+  const required = { address: "alice@example.com", query: "hello" };
+
+  it("accepts the minimal required body", () => {
+    const r = parseSearchEmailInput(required);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual(required);
+    }
+  });
+
+  it("accepts every optional field", () => {
+    const r = parseSearchEmailInput({
+      ...required,
+      limit: 25,
+      cursor: "opaque",
+      since: "2026-05-01T00:00:00Z",
+      until: "2026-05-21T00:00:00Z",
+      from: "bob@example.com",
+      to: "alice@example.com",
+      subject: "report",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        ...required,
+        limit: 25,
+        cursor: "opaque",
+        since: "2026-05-01T00:00:00Z",
+        until: "2026-05-21T00:00:00Z",
+        from: "bob@example.com",
+        to: "alice@example.com",
+        subject: "report",
+      });
+    }
+  });
+
+  it("rejects an empty query (use read_inbox for 'everything')", () => {
+    const r = parseSearchEmailInput({ ...required, query: "" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("query");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a missing query with code=missing", () => {
+    const r = parseSearchEmailInput({ address: required.address });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("query");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing address", () => {
+    const r = parseSearchEmailInput({ query: "hello" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("address");
+  });
+
+  it("rejects an unparseable since", () => {
+    const r = parseSearchEmailInput({ ...required, since: "not-a-date" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("since");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a non-string from", () => {
+    const r = parseSearchEmailInput({ ...required, from: 42 });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("from");
+      expect(r.error.code).toBe("invalid_type");
+    }
   });
 });
