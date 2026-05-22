@@ -7,6 +7,22 @@
 
 import type { Thread } from "./threading.ts";
 
+// ADR-0033 (slice 8.15). The threadable subset of the current view.
+// Drives the header tri-state checkbox (denominator) and the
+// "select all" expansion (the keys to add to the selection set).
+// Subject-fallback rollups are filtered out at the same gate as the
+// per-row checkbox and computeRange — bulk selection only operates on
+// rows with a server-stamped thread id.
+export function threadableRootKeys(
+  threads: readonly Thread[],
+): readonly string[] {
+  const out: string[] = [];
+  for (const t of threads) {
+    if (t.rootKey.startsWith("<")) out.push(t.rootKey);
+  }
+  return out;
+}
+
 // Inclusive range from anchor to target in current view order. Returns
 // [] when either rootKey is missing from the view; the caller falls
 // back to a plain toggle in that case.

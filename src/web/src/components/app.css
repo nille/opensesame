@@ -296,6 +296,34 @@
   padding: var(--r-2) 0;
 }
 
+/* ADR-0033 (slice 8.15). Master select-all header — sits above the
+   row list, mirrors the bulk-bar's count-line typography so the two
+   feel like the same vertical channel. */
+.inbox-list__header {
+  display: flex;
+  align-items: center;
+  gap: var(--r-3);
+  padding: var(--r-3) var(--r-5);
+  border-bottom: 1px solid var(--rule);
+}
+
+.inbox-list__header-check {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.inbox-list__header-check:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.inbox-list__header-count {
+  font-size: var(--t-mono-sm);
+}
+
 .inbox-row {
   display: grid;
   grid-template-columns: 16px 1fr;

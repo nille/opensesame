@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { computeRange } from "../../src/web/src/lib/selection.js";
+import {
+  computeRange,
+  threadableRootKeys,
+} from "../../src/web/src/lib/selection.js";
 import type { Thread } from "../../src/web/src/lib/threading.js";
 
 // ADR-0032 (slice 8.14). Pure helper unit tests for the bulk-select
@@ -92,5 +95,38 @@ describe("computeRange", () => {
       "<d@x>",
       "<e@x>",
     ]);
+  });
+});
+
+describe("threadableRootKeys", () => {
+  it("returns every server-stamped rootKey, in view order", () => {
+    expect(threadableRootKeys(T)).toEqual([
+      "<a@x>",
+      "<b@x>",
+      "<c@x>",
+      "<d@x>",
+      "<e@x>",
+    ]);
+  });
+
+  it("filters out subject-fallback rollups", () => {
+    const mixed = [
+      thread("subj:2026-05:alpha"),
+      thread("<one@x>"),
+      thread("subj:2026-04:beta"),
+    ];
+    expect(threadableRootKeys(mixed)).toEqual(["<one@x>"]);
+  });
+
+  it("returns [] when the view contains only rollups", () => {
+    const rollupsOnly = [
+      thread("subj:2026-05:alpha"),
+      thread("subj:2026-04:beta"),
+    ];
+    expect(threadableRootKeys(rollupsOnly)).toEqual([]);
+  });
+
+  it("returns [] for an empty view", () => {
+    expect(threadableRootKeys([])).toEqual([]);
   });
 });

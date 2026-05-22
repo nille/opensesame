@@ -27,7 +27,7 @@ import {
   type ComposerSeed,
 } from "./Composer.tsx";
 import { BulkActionBar } from "./BulkActionBar.tsx";
-import { computeRange } from "../lib/selection.ts";
+import { computeRange, threadableRootKeys } from "../lib/selection.ts";
 import "./app.css";
 
 // The active mailbox is configured per deploy, not picked in-product.
@@ -558,6 +558,26 @@ export function App(): JSX.Element {
     [anchorRootKey, threads],
   );
 
+  // ADR-0033 (slice 8.15). Master "select all in view" toggle. Click
+  // semantics: any non-empty selection collapses to empty (mouse and
+  // keyboard agree on the terminal state); an empty selection expands
+  // to every threadable rootKey in the current view. Anchor jumps to
+  // the first row of the new "all" set so a follow-up Shift+click
+  // extends from the top — the natural reading-order start.
+  const toggleSelectAll = useCallback((): void => {
+    const all = threadableRootKeys(threads);
+    if (all.length === 0) return;
+    if (selection.size === 0) {
+      setSelection(new Set(all));
+      setAnchorRootKey(all[0] ?? null);
+    } else {
+      // Partial or full → collapse to empty. Single click target,
+      // single terminal state.
+      setSelection(new Set());
+      setAnchorRootKey(null);
+    }
+  }, [threads, selection.size]);
+
   // Bulk apply: fan out one of the per-thread handlers over the current
   // selection. Promise.allSettled posture means a per-thread failure
   // rolls back only that row (each handler owns its own pending-map
@@ -675,6 +695,12 @@ export function App(): JSX.Element {
         } else if (e.key === "k") {
           e.preventDefault();
           setSelectedIdx((i) => Math.max(0, i - 1));
+        } else if (e.key === "X" && e.shiftKey) {
+          // Slice 8.15 (ADR-0033). Shift+x toggles select-all-in-view.
+          // No-op when the view has no threadable rows. Independent of
+          // the focused row — the master toggle is a view-level gesture.
+          e.preventDefault();
+          toggleSelectAll();
         } else if (e.key === "x") {
           // Slice 8.14. Toggle the focused thread's selection
           // membership. Same gate as star/snooze/trash/read — server
@@ -683,8 +709,6 @@ export function App(): JSX.Element {
           if (t === undefined) return;
           if (!t.rootKey.startsWith("<")) return;
           e.preventDefault();
-          // Keyboard `x` is always a plain toggle — Shift+x is reserved
-          // for a future "select all visible" affordance.
           toggleSelection(t.rootKey, false);
         } else if (e.key === "c") {
           e.preventDefault();
@@ -768,6 +792,7 @@ export function App(): JSX.Element {
               "#        trash / untrash selected thread",
               "Shift+U  mark thread read / unread",
               "x        add / remove focused thread from selection",
+              "Shift+x  select / deselect all in view",
               "c        compose new",
               "t        toggle theme",
               "esc      close composer / clear search / clear selection",
@@ -796,6 +821,7 @@ export function App(): JSX.Element {
         toggle,
         selection.size,
         toggleSelection,
+        toggleSelectAll,
         clearSelection,
       ],
     ),
@@ -881,6 +907,7 @@ export function App(): JSX.Element {
           onToggleRead={toggleRead}
           selection={selection}
           onToggleSelection={toggleSelection}
+          onToggleSelectAll={toggleSelectAll}
         />
       </div>
       {pane.mode === "reader" ? (

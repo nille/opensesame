@@ -46,6 +46,11 @@ interface InboxListProps {
   // expansion.
   selection: Set<string>;
   onToggleSelection: (rootKey: string, withShift: boolean) => void;
+  // Slice 8.15 (ADR-0033). Master "select all in view" handler. Click
+  // semantics live in App.tsx — this is just the UI surface. The
+  // header row reads `selection` + `threads` to compute its tri-state
+  // visual.
+  onToggleSelectAll: () => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -69,6 +74,7 @@ export function InboxList({
   onToggleRead,
   selection,
   onToggleSelection,
+  onToggleSelectAll,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -108,6 +114,11 @@ export function InboxList({
 
   return (
     <div className="inbox-list" ref={listRef}>
+      <SelectAllHeader
+        threads={threads}
+        selection={selection}
+        onToggle={onToggleSelectAll}
+      />
       {threads.map((thread, idx) => {
         const focused = idx === selectedIdx;
         const lead = thread.rows[0];
@@ -293,6 +304,69 @@ export function InboxList({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ADR-0033 (slice 8.15). Master select-all header. Tri-state visual
+// drives off the count of threadable (server-stamped) rows in view vs.
+// the count of selected rootKeys; subject-fallback rollups never
+// participate, matching the per-row checkbox gate.
+//
+// React's controlled `checked` only models two states, so we flip the
+// DOM `indeterminate` property imperatively via ref. This is the
+// canonical pattern for tri-state checkboxes; keeping it in a tiny
+// subcomponent isolates the imperative bit from the rest of the list.
+interface SelectAllHeaderProps {
+  threads: readonly Thread[];
+  selection: Set<string>;
+  onToggle: () => void;
+}
+
+function SelectAllHeader({
+  threads,
+  selection,
+  onToggle,
+}: SelectAllHeaderProps): JSX.Element | null {
+  const checkboxRef = useRef<HTMLInputElement>(null);
+  let total = 0;
+  let picked = 0;
+  for (const t of threads) {
+    if (!t.rootKey.startsWith("<")) continue;
+    total += 1;
+    if (selection.has(t.rootKey)) picked += 1;
+  }
+  const allChecked = total > 0 && picked === total;
+  const indeterminate = picked > 0 && picked < total;
+
+  useEffect(() => {
+    const el = checkboxRef.current;
+    if (el) el.indeterminate = indeterminate;
+  }, [indeterminate]);
+
+  if (threads.length === 0) return null;
+
+  // Count line. "0 of N" when none, "M of N selected" otherwise.
+  // Denominator is `total` (threadable rows), not threads.length —
+  // the operator's question is "what would clicking this select?".
+  const label =
+    picked === 0 ? `${total} threads` : `${picked} of ${total} selected`;
+
+  const ariaLabel =
+    picked > 0 ? "Deselect all threads in view" : "Select all threads in view";
+
+  return (
+    <div className="inbox-list__header">
+      <input
+        ref={checkboxRef}
+        type="checkbox"
+        className="inbox-list__header-check"
+        aria-label={ariaLabel}
+        checked={allChecked}
+        disabled={total === 0}
+        onChange={onToggle}
+      />
+      <span className="inbox-list__header-count mono faint">{label}</span>
     </div>
   );
 }
