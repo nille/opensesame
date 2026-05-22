@@ -220,6 +220,22 @@ export type TrashThreadResult = {
   updated_count: number;
 };
 
+// ADR-0031 (slice 8.13): toggle read/unread across every inbound row in
+// the thread. Boolean wire shape mirrors star/trash. The result echoes
+// read_at so optimistic UI can render without a refetch. Outbound rows
+// are skipped server-side, so updated_count counts only inbound writes.
+export type MarkThreadReadInput = {
+  thread_id: string;
+  read: boolean;
+};
+
+export type MarkThreadReadResult = {
+  thread_id: string;
+  read: boolean;
+  read_at: string | null;
+  updated_count: number;
+};
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -369,6 +385,11 @@ export const bff = {
   },
   trashThread(input: TrashThreadInput): Promise<RpcResult<TrashThreadResult>> {
     return call<TrashThreadResult>("trash_thread", input);
+  },
+  markThreadRead(
+    input: MarkThreadReadInput,
+  ): Promise<RpcResult<MarkThreadReadResult>> {
+    return call<MarkThreadReadResult>("mark_thread_read", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

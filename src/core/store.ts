@@ -342,6 +342,23 @@ export type MarkReadResult =
   | { kind: "already_read"; read_at: string }
   | { kind: "not_found" };
 
+// ADR-0031 (slice 8.13). Per-thread read/unread toggle. Wire shape mirrors
+// star (boolean) — the per-thread path is last-write-wins to behave like a
+// UI toggle; the per-row markRead from slice 8.2 stays first-write-wins for
+// audit. Fan-out targets inbound rows only (direction == "in") — outbound
+// rows are never "unread". Empty / outbound-only thread → updated_count: 0.
+export type MarkThreadReadInput = {
+  thread_id: string;
+  read: boolean;
+};
+
+export type MarkThreadReadResult = {
+  thread_id: string;
+  read: boolean;
+  read_at: string | null;
+  updated_count: number;
+};
+
 export interface MessageReader {
   getByMessageId(messageId: string): Promise<ReadMessage | null>;
   getByPrimaryKey(
@@ -404,4 +421,14 @@ export interface MessageReader {
   // removes the attribute. The `now` parameter timestamps the trash
   // operation when stamping.
   trashThread(input: TrashThreadInput, now: Date): Promise<TrashThreadResult>;
+  // ADR-0031 (slice 8.13): toggle read/unread across every inbound row in
+  // the thread. Resolves rows via ThreadIdGSI, projects `direction` to
+  // skip outbound rows, then fans out SET/REMOVE on `read_at`. Last-write-
+  // wins (UI toggle, distinct from the first-write-wins per-row markRead
+  // from slice 8.2). Wake-on-reply is implicit: a fresh inbound row lands
+  // without `read_at`, so `Thread.unread` flips back automatically.
+  markThreadRead(
+    input: MarkThreadReadInput,
+    now: Date,
+  ): Promise<MarkThreadReadResult>;
 }

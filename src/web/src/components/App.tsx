@@ -76,6 +76,13 @@ export function App(): JSX.Element {
   const [pendingTrashes, setPendingTrashes] = useState<Map<string, boolean>>(
     () => new Map(),
   );
+  // ADR-0031 (slice 8.13). Optimistic-pending read intent map. The map
+  // stores the *target* read state — `true` means the operator just marked
+  // the thread read, `false` means just marked unread. Cleared on next
+  // inbox poll (server-authoritative) or rolled back on RPC error.
+  const [pendingReads, setPendingReads] = useState<Map<string, boolean>>(
+    () => new Map(),
+  );
   // The reader-header snooze picker is controlled so the global `z` shortcut
   // can pop it open while keeping the gutter pickers self-managed.
   const [readerSnoozePickerOpen, setReaderSnoozePickerOpen] = useState(false);
@@ -450,6 +457,39 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0031 (slice 8.13). Toggle read/unread on every inbound row in the
+  // thread. Mirror of toggleTrash. The map stores the target read state so
+  // the optimistic UI can flip the dot/badge before the RPC settles.
+  const toggleRead = useCallback(
+    (rootKey: string, next: boolean): void => {
+      if (!rootKey.startsWith("<")) return;
+      setPendingReads((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, next);
+        return m;
+      });
+      void bff
+        .markThreadRead({ thread_id: rootKey, read: next })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            setPendingReads((prev) => {
+              const m = new Map(prev);
+              m.delete(rootKey);
+              return m;
+            });
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          setPendingReads((prev) => {
+            const m = new Map(prev);
+            m.delete(rootKey);
+            return m;
+          });
+        });
+    },
+    [queryClient],
+  );
+
   // Resolve the parent for reply mode. Reuses the same ["message", id] cache
   // entry that the Reader populated, so this is a free hit in the common case.
   const replyParentId =
@@ -540,6 +580,21 @@ export function App(): JSX.Element {
           const pending = pendingTrashes.get(t.rootKey);
           const current = pending ?? t.trashed;
           toggleTrash(t.rootKey, !current);
+        } else if (e.key === "U" && e.shiftKey) {
+          // Slice 8.13. Shift+U toggles read/unread on the selected
+          // thread (Gmail convention). Plain `u` is reserved for a
+          // future archive shortcut.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          const pending = pendingReads.get(t.rootKey);
+          // The map stores the *target* state, not the current — when
+          // present, the thread is currently in that target state. When
+          // absent, fall back to t.unread (true → unread → next: read).
+          const currentlyUnread =
+            pending !== undefined ? !pending : t.unread;
+          toggleRead(t.rootKey, currentlyUnread);
         } else if (e.key === "/") {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -556,6 +611,7 @@ export function App(): JSX.Element {
               "s        star / unstar selected thread",
               "z / Z    snooze (picker) / unsnooze immediately",
               "#        trash / untrash selected thread",
+              "Shift+U  mark thread read / unread",
               "c        compose new",
               "t        toggle theme",
               "esc      close composer / clear search",
@@ -574,9 +630,11 @@ export function App(): JSX.Element {
         pendingStars,
         pendingSnoozes,
         pendingTrashes,
+        pendingReads,
         toggleStar,
         pickSnooze,
         toggleTrash,
+        toggleRead,
         openCompose,
         replyToCurrent,
         toggle,
@@ -635,6 +693,8 @@ export function App(): JSX.Element {
         onPickSnooze={pickSnooze}
         pendingTrashes={pendingTrashes}
         onToggleTrash={toggleTrash}
+        pendingReads={pendingReads}
+        onToggleRead={toggleRead}
       />
       {pane.mode === "reader" ? (
         (() => {
@@ -656,6 +716,17 @@ export function App(): JSX.Element {
             t === null ? undefined : pendingTrashes.get(t.rootKey);
           const trashFilled =
             t === null ? false : (trashPending ?? t.trashed);
+          // Slice 8.13. The map stores the *target* read state, so a pending
+          // entry flips the unread bit immediately. Without an entry, fall
+          // back to the server-aggregated `unread`.
+          const readPending =
+            t === null ? undefined : pendingReads.get(t.rootKey);
+          const unread =
+            t === null
+              ? false
+              : readPending !== undefined
+                ? !readPending
+                : t.unread;
           return (
             <Reader
               // key remounts the Reader on thread change so the in-card
@@ -677,6 +748,9 @@ export function App(): JSX.Element {
               trashFilled={trashFilled}
               trashPending={trashPending !== undefined}
               onToggleTrash={toggleTrash}
+              unread={unread}
+              readPending={readPending !== undefined}
+              onToggleRead={toggleRead}
             />
           );
         })()

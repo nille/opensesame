@@ -1350,3 +1350,75 @@
   border-color: var(--danger-soft);
   color: var(--danger);
 }
+
+/* Mark-read affordance (slice 8.13). Mirrors trash's posture:
+   transparent base, brighter on hover, accent when the thread is unread
+   (the icon worth drawing attention to), faint when already read. */
+.markread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.markread:hover:not(.markread--disabled) {
+  color: var(--ink);
+}
+
+/* Unread is the calls-to-action state: keep the envelope visible at full
+   opacity in the row gutter without requiring a hover. The accent ink
+   echoes the unread dot it sits next to. */
+.markread--unread {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.markread--unread:hover:not(.markread--disabled) {
+  color: var(--accent);
+  filter: brightness(1.05);
+}
+
+.markread--pending {
+  opacity: 0.65;
+}
+
+.markread--disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+  opacity: 0.4;
+}
+
+.markread--gutter {
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+}
+.inbox-row:hover .markread--gutter,
+.inbox-row .markread--gutter.markread--unread,
+.inbox-row .markread--gutter.markread--pending {
+  opacity: 1;
+}
+.inbox-row .markread--gutter.markread--disabled {
+  opacity: 0;
+}
+.inbox-row:hover .markread--gutter.markread--disabled {
+  opacity: 0.25;
+}
+
+.markread--header {
+  opacity: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.markread--header:hover:not(.markread--disabled) {
+  background: var(--paper-2);
+}

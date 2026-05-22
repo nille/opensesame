@@ -9,6 +9,7 @@ import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
+import { MarkReadButton } from "./MarkRead.tsx";
 
 interface InboxListProps {
   threads: Thread[];
@@ -33,6 +34,11 @@ interface InboxListProps {
   // pending intent wins over server `trashed` for the icon and chip.
   pendingTrashes: Map<string, boolean>;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  // Slice 8.13 (ADR-0031). Pending read intent map. The value stored is the
+  // *target* read state (true = "marking read", false = "marking unread"),
+  // so the unread dot/badge can flip optimistically before the RPC settles.
+  pendingReads: Map<string, boolean>;
+  onToggleRead: (rootKey: string, next: boolean) => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -52,6 +58,8 @@ export function InboxList({
   onPickSnooze,
   pendingTrashes,
   onToggleTrash,
+  pendingReads,
+  onToggleRead,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -148,6 +156,14 @@ export function InboxList({
         // Trash: pending intent wins over server state, same posture as star.
         const pendingTrash = pendingTrashes.get(thread.rootKey);
         const trashFilled = pendingTrash ?? thread.trashed;
+        // Read: the map stores the *target* read state, so a pending entry
+        // flips the unread bit immediately. When the entry is `true` (mark
+        // read), the dot disappears; when `false` (mark unread), the dot
+        // re-appears. Any thread without inbound rows can never be unread.
+        const hasInbound = thread.rows.some((r) => r.direction === "in");
+        const pendingRead = pendingReads.get(thread.rootKey);
+        const unreadFilled =
+          pendingRead !== undefined ? !pendingRead : thread.unread;
 
         return (
           <div
@@ -164,13 +180,13 @@ export function InboxList({
               className={
                 "inbox-row__gutter" +
                 (filled ? " inbox-row__gutter--starred" : "") +
-                (thread.unread && !filled ? " inbox-row__gutter--unread" : "")
+                (unreadFilled && !filled ? " inbox-row__gutter--unread" : "")
               }
             >
               {/* Filled star always renders. Unstarred star renders too —
                   CSS hides it unless the row is hovered or the thread is
                   unread (so the dot can swap to a star on hover). */}
-              {thread.unread && !filled ? (
+              {unreadFilled && !filled ? (
                 <span className="inbox-row__dot" aria-hidden />
               ) : null}
               <StarButton
@@ -196,6 +212,14 @@ export function InboxList({
                 variant="gutter"
                 stopPropagation
                 onToggle={(next) => onToggleTrash(thread.rootKey, next)}
+              />
+              <MarkReadButton
+                unread={unreadFilled}
+                pending={pendingRead !== undefined}
+                disabled={!threadable || !hasInbound}
+                variant="gutter"
+                stopPropagation
+                onToggle={(next) => onToggleRead(thread.rootKey, next)}
               />
             </div>
             <div className="inbox-row__main">

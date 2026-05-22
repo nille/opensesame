@@ -20,6 +20,7 @@ import { useKeyboard } from "../hooks/useKeyboard.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
+import { MarkReadButton } from "./MarkRead.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -55,6 +56,13 @@ interface ReaderProps {
   trashFilled: boolean;
   trashPending: boolean;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  // Slice 8.13. Read/unread toggle. App resolves `unread` from the thread's
+  // server-aggregated state, with the pending intent map winning during
+  // optimistic flips. Disabled mirrors trash + an additional gate in App
+  // for outbound-only threads.
+  unread: boolean;
+  readPending: boolean;
+  onToggleRead: (rootKey: string, next: boolean) => void;
 }
 
 // Slice 8.6: the reader pane renders the whole conversation. Subject sits at
@@ -83,6 +91,9 @@ export function Reader({
   trashFilled,
   trashPending,
   onToggleTrash,
+  unread,
+  readPending,
+  onToggleRead,
 }: ReaderProps): JSX.Element {
   if (thread === null) {
     return (
@@ -130,6 +141,9 @@ export function Reader({
       trashFilled={trashFilled}
       trashPending={trashPending}
       onToggleTrash={onToggleTrash}
+      unread={unread}
+      readPending={readPending}
+      onToggleRead={onToggleRead}
     />
   );
 }
@@ -151,6 +165,9 @@ interface ThreadReaderProps {
   trashFilled: boolean;
   trashPending: boolean;
   onToggleTrash: (rootKey: string, next: boolean) => void;
+  unread: boolean;
+  readPending: boolean;
+  onToggleRead: (rootKey: string, next: boolean) => void;
 }
 
 function ThreadReader({
@@ -170,6 +187,9 @@ function ThreadReader({
   trashFilled,
   trashPending,
   onToggleTrash,
+  unread,
+  readPending,
+  onToggleRead,
 }: ThreadReaderProps): JSX.Element {
   // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
   // (rootKey starts with "<"), fetch the full thread via list_thread_messages
@@ -286,6 +306,14 @@ function ThreadReader({
             size={18}
             onToggle={(next) => onToggleTrash(thread.rootKey, next)}
           />
+          <MarkReadButton
+            unread={unread}
+            pending={readPending}
+            disabled={!threadable || !thread.rows.some((r) => r.direction === "in")}
+            variant="header"
+            size={18}
+            onToggle={(next) => onToggleRead(thread.rootKey, next)}
+          />
         </div>
         <div className="reader__threadmeta mono faint">
           {rows.length + thread.failedRows.length}{" "}
@@ -297,6 +325,7 @@ function ThreadReader({
             ? " · snoozed until " + formatSnoozedUntil(snoozedUntil)
             : ""}
           {trashFilled ? " · trashed" : ""}
+          {unread ? " · unread" : ""}
         </div>
       </header>
       <div className="reader__stack">

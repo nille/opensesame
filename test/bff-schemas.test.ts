@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   parseGetMessageInput,
+  parseMarkThreadReadInput,
   parseReadInboxInput,
   parseSearchEmailInput,
   parseSendEmailInput,
@@ -513,5 +514,75 @@ describe("parseTrashThreadInput (ADR-0030)", () => {
     expect(parseTrashThreadInput(null).ok).toBe(false);
     expect(parseTrashThreadInput([]).ok).toBe(false);
     expect(parseTrashThreadInput("hello").ok).toBe(false);
+  });
+});
+
+describe("parseMarkThreadReadInput (ADR-0031)", () => {
+  it("accepts a valid {thread_id, read: true} body", () => {
+    const r = parseMarkThreadReadInput({
+      thread_id: "<root@example.com>",
+      read: true,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        thread_id: "<root@example.com>",
+        read: true,
+      });
+    }
+  });
+
+  it("accepts {read: false} for marking unread", () => {
+    const r = parseMarkThreadReadInput({
+      thread_id: "<root@example.com>",
+      read: false,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.read).toBe(false);
+  });
+
+  it("rejects a missing thread_id", () => {
+    const r = parseMarkThreadReadInput({ read: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty thread_id with code=missing", () => {
+    const r = parseMarkThreadReadInput({ thread_id: "", read: true });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing read with code=missing", () => {
+    const r = parseMarkThreadReadInput({ thread_id: "<root@example.com>" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("read");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a non-boolean read", () => {
+    const r = parseMarkThreadReadInput({
+      thread_id: "<root@example.com>",
+      read: "yes",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("read");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseMarkThreadReadInput(null).ok).toBe(false);
+    expect(parseMarkThreadReadInput([]).ok).toBe(false);
+    expect(parseMarkThreadReadInput("hello").ok).toBe(false);
   });
 });

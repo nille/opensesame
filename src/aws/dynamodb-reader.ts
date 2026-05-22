@@ -19,6 +19,8 @@ import type {
   ListThreadMessagesInput,
   ListThreadMessagesResult,
   MarkReadResult,
+  MarkThreadReadInput,
+  MarkThreadReadResult,
   MessageDirection,
   MessageReader,
   ReadMessage,
@@ -69,6 +71,7 @@ export function makeDynamoMessageReader(
     starThread: (input, now) => starThread(deps, input, now),
     snoozeThread: (input, now) => snoozeThread(deps, input, now),
     trashThread: (input, now) => trashThread(deps, input, now),
+    markThreadRead: (input, now) => markThreadRead(deps, input, now),
   };
 }
 
@@ -612,23 +615,35 @@ async function listThreadMessages(
 // pathological mailing-list threads; the dispatcher echoes that ceiling.
 const MAX_THREAD_LIMIT = 200;
 
+// Optional row predicate — when present, only rows for which it returns
+// `true` are fanned out. The Query projection extension lets the caller
+// pull additional attributes (e.g. `direction`) needed to evaluate it.
+type FanOutOptions = {
+  projectionExtras?: readonly string[];
+  rowFilter?: (row: Record<string, unknown>) => boolean;
+};
+
 async function fanOutThreadAttribute(
   deps: DynamoMessageReaderDeps,
   threadId: string,
   attributeName: string,
   value: string | null,
+  opts: FanOutOptions = {},
 ): Promise<number> {
+  const projection = ["address", "internal_id", ...(opts.projectionExtras ?? [])]
+    .join(", ");
   const out = await deps.client.send(
     new QueryCommand({
       TableName: deps.messagesTable,
       IndexName: deps.threadIdGsiName,
       KeyConditionExpression: "thread_id = :tid",
       ExpressionAttributeValues: { ":tid": threadId },
-      ProjectionExpression: "address, internal_id",
+      ProjectionExpression: projection,
       Limit: MAX_THREAD_LIMIT,
     }),
   );
-  const rows = out.Items ?? [];
+  const allRows = out.Items ?? [];
+  const rows = opts.rowFilter ? allRows.filter(opts.rowFilter) : allRows;
   if (rows.length === 0) return 0;
 
   const results = await Promise.all(
@@ -733,6 +748,36 @@ async function trashThread(
     thread_id: input.thread_id,
     trashed: input.trashed,
     trashed_at: input.trashed ? isoNow : null,
+    updated_count,
+  };
+}
+
+// ADR-0031 (slice 8.13). Per-thread read/unread toggle. Boolean wire
+// shape (matches star/trash). Last-write-wins on the per-row `read_at`
+// timestamp — distinct from the slice-8.2 per-row markRead which is
+// first-write-wins. Fan-out is filtered to inbound rows only; outbound
+// rows are never "unread" in any UI sense.
+async function markThreadRead(
+  deps: DynamoMessageReaderDeps,
+  input: MarkThreadReadInput,
+  now: Date,
+): Promise<MarkThreadReadResult> {
+  const isoNow = now.toISOString();
+  const value = input.read ? isoNow : null;
+  const updated_count = await fanOutThreadAttribute(
+    deps,
+    input.thread_id,
+    "read_at",
+    value,
+    {
+      projectionExtras: ["direction"],
+      rowFilter: (r) => r["direction"] === "in",
+    },
+  );
+  return {
+    thread_id: input.thread_id,
+    read: input.read,
+    read_at: input.read ? isoNow : null,
     updated_count,
   };
 }

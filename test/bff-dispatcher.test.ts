@@ -36,6 +36,7 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       starThread: vi.fn(noop),
       snoozeThread: vi.fn(noop),
       trashThread: vi.fn(noop),
+      markThreadRead: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -81,6 +82,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -111,6 +113,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -163,6 +166,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -255,6 +259,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -279,6 +284,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -347,6 +353,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -383,6 +390,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -460,6 +468,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -509,6 +518,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -536,6 +546,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -566,6 +577,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -597,6 +609,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -632,6 +645,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -699,6 +713,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/search_email", {
@@ -793,6 +808,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -826,6 +842,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -856,6 +873,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -892,6 +910,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       sendEmail,
     });
@@ -940,6 +959,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
       sendEmail,
     });
@@ -993,6 +1013,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1025,6 +1046,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1056,6 +1078,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1087,6 +1110,7 @@ describe("dispatch", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1149,6 +1173,7 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         starThread,
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1188,6 +1213,7 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         starThread,
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1213,6 +1239,7 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         }),
         snoozeThread: vi.fn(),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1310,6 +1337,7 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         starThread: vi.fn(),
         snoozeThread,
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1347,6 +1375,7 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         starThread: vi.fn(),
         snoozeThread,
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1379,6 +1408,7 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         starThread: vi.fn(),
         snoozeThread,
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1404,6 +1434,7 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
           throw new Error("ddb boom");
         }),
         trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1469,6 +1500,7 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread,
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
@@ -1508,6 +1540,7 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         starThread: vi.fn(),
         snoozeThread: vi.fn(),
         trashThread,
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
@@ -1533,11 +1566,147 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         trashThread: vi.fn(async () => {
           throw new Error("ddb boom");
         }),
+        markThreadRead: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
       thread_id: "<root@example.com>",
       trashed: true,
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+// ADR-0031 (slice 8.13). Same status-code shape as star/trash — boolean
+// toggle; empty thread or outbound-only thread is 200 no-op (updated_count:
+// 0), not 404.
+describe("dispatch /rpc/mark_thread_read (ADR-0031)", () => {
+  it("mark_thread_read: 400 when thread_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/mark_thread_read", {
+      read: true,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "thread_id",
+    });
+  });
+
+  it("mark_thread_read: 400 when read is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/mark_thread_read", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "read",
+    });
+  });
+
+  it("mark_thread_read: 400 when read is not a boolean", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/mark_thread_read", {
+      thread_id: "<root@example.com>",
+      read: "yes",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "read",
+    });
+  });
+
+  it("mark_thread_read: 200 — forwards parsed input and echoes the reader result", async () => {
+    const markThreadRead = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      read: true,
+      read_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 3,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/mark_thread_read", {
+      thread_id: "<root@example.com>",
+      read: true,
+    });
+    expect(r.status).toBe(200);
+    expect(markThreadRead).toHaveBeenCalledTimes(1);
+    expect(markThreadRead).toHaveBeenCalledWith(
+      { thread_id: "<root@example.com>", read: true },
+      expect.any(Date),
+    );
+    expect(r.body).toEqual({
+      thread_id: "<root@example.com>",
+      read: true,
+      read_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 3,
+    });
+  });
+
+  it("mark_thread_read: 200 with updated_count 0 for outbound-only thread (no inbound rows → no-op, not 404)", async () => {
+    const markThreadRead = vi.fn(async () => ({
+      thread_id: "<sent-only@example.com>",
+      read: true,
+      read_at: "2026-05-22T10:00:00.000Z",
+      updated_count: 0,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/mark_thread_read", {
+      thread_id: "<sent-only@example.com>",
+      read: true,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ updated_count: 0 });
+  });
+
+  it("mark_thread_read: 500 when the reader throws", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(async () => {
+          throw new Error("ddb boom");
+        }),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/mark_thread_read", {
+      thread_id: "<root@example.com>",
+      read: true,
     });
     expect(r.status).toBe(500);
     expect(r.body).toMatchObject({ code: "internal_error" });

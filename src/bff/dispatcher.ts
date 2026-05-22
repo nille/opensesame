@@ -37,6 +37,7 @@ import {
   parseGetMessageInput,
   parseListThreadMessagesInput,
   parseMarkReadInput,
+  parseMarkThreadReadInput,
   parseReadInboxInput,
   parseReplyToEmailInput,
   parseSearchEmailInput,
@@ -115,6 +116,8 @@ export async function dispatch(
       return handleSnoozeThread(deps, body);
     case "trash_thread":
       return handleTrashThread(deps, body);
+    case "mark_thread_read":
+      return handleMarkThreadRead(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -494,6 +497,23 @@ async function handleTrashThread(
 
   try {
     const result = await deps.reader.trashThread(parsed.value, new Date());
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0031 (slice 8.13). Per-thread read/unread toggle. Empty thread or
+// outbound-only thread is a 200 no-op (updated_count: 0), not 404.
+async function handleMarkThreadRead(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseMarkThreadReadInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  try {
+    const result = await deps.reader.markThreadRead(parsed.value, new Date());
     return ok(result);
   } catch (err) {
     return internalError(err);

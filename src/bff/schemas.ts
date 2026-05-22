@@ -622,6 +622,38 @@ export function parseTrashThreadInput(
   return ok({ thread_id: threadId, trashed: obj["trashed"] });
 }
 
+// ADR-0031 (slice 8.13). Per-thread mark-read/unread toggle. Boolean wire
+// shape mirrors star and trash; the dispatcher trusts the schema and the
+// reader trusts its input.
+
+export type MarkThreadReadInput = {
+  thread_id: string;
+  read: boolean;
+};
+
+export function parseMarkThreadReadInput(
+  body: unknown,
+): ParseResult<MarkThreadReadInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  if (obj["read"] === undefined) {
+    return fail("read", "missing", "read is required");
+  }
+  if (typeof obj["read"] !== "boolean") {
+    return fail("read", "invalid_type", "read must be a boolean");
+  }
+
+  return ok({ thread_id: threadId, read: obj["read"] });
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {
