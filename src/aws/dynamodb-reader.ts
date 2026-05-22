@@ -16,6 +16,8 @@ import type {
   InboxRowOk,
   ListInboxInput,
   ListInboxResult,
+  ListThreadMessagesInput,
+  ListThreadMessagesResult,
   MarkReadResult,
   MessageDirection,
   MessageReader,
@@ -41,6 +43,8 @@ export type DynamoMessageReaderDeps = {
   messagesTable: string;
   bodyChunksTable: string;
   messageIdGsiName: string;
+  // ADR-0027: ThreadIdGSI on the Messages table, PK=thread_id SK=internal_id.
+  threadIdGsiName: string;
 };
 
 export function makeDynamoMessageReader(
@@ -55,6 +59,7 @@ export function makeDynamoMessageReader(
     markReadByPrimaryKey: (address, internalId, now) =>
       markReadByPrimaryKey(deps, address, internalId, now),
     searchEmail: (input) => searchEmail(deps, input),
+    listThreadMessages: (input) => listThreadMessages(deps, input),
   };
 }
 
@@ -550,6 +555,33 @@ async function chunkMatches(
     }
   }
   return false;
+}
+
+// ADR-0027 (slice 8.9). Single Query against ThreadIdGSI; ascending by
+// internal_id so callers read in conversational order. The cursor is the
+// same opaque base64-encoded LastEvaluatedKey shape as listInbox/searchEmail.
+async function listThreadMessages(
+  deps: DynamoMessageReaderDeps,
+  input: ListThreadMessagesInput,
+): Promise<ListThreadMessagesResult> {
+  const out = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.messagesTable,
+      IndexName: deps.threadIdGsiName,
+      KeyConditionExpression: "thread_id = :tid",
+      ExpressionAttributeValues: { ":tid": input.thread_id },
+      ScanIndexForward: true,
+      Limit: input.limit,
+      ExclusiveStartKey: input.cursor ? decodeCursor(input.cursor) : undefined,
+    }),
+  );
+
+  const messages = (out.Items ?? []).map(projectInboxRow);
+  const next_cursor = out.LastEvaluatedKey
+    ? encodeCursor(out.LastEvaluatedKey)
+    : null;
+
+  return { messages, next_cursor };
 }
 
 function encodeCursor(lek: Record<string, unknown>): string {

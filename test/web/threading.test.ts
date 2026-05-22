@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { groupIntoThreads } from "../../src/web/src/lib/threading.js";
+import {
+  groupIntoThreads,
+  mergeThreadRows,
+} from "../../src/web/src/lib/threading.js";
 import type {
   InboxRow,
   InboxRowFailed,
   InboxRowOk,
+  ListThreadMessagesResult,
+  RpcResult,
 } from "../../src/web/src/lib/bff-client.js";
 
 // Client-side threading (slice 8.5, ADR-0023). Mirrors the server's
@@ -471,5 +476,115 @@ describe("groupIntoThreads", () => {
     const out = groupIntoThreads(rows);
     expect(out).toHaveLength(1);
     expect(out[0]!.rootKey).toBe("<root@example.com>");
+  });
+});
+
+describe("mergeThreadRows (ADR-0027 / slice 8.9)", () => {
+  function ok<T>(value: T): RpcResult<T> {
+    return { kind: "ok", value };
+  }
+
+  it("returns the in-window rows unchanged when the fetch is undefined", () => {
+    const inWindow = [
+      row({
+        internal_id: "01H0000000000000000000A",
+        received_at: "2026-05-20T10:00:00.000Z",
+      }),
+    ];
+    expect(mergeThreadRows(inWindow, undefined)).toEqual(inWindow);
+  });
+
+  it("returns the in-window rows unchanged when the fetch errored", () => {
+    const inWindow = [
+      row({
+        internal_id: "01H0000000000000000000A",
+        received_at: "2026-05-20T10:00:00.000Z",
+      }),
+    ];
+    const fetched: RpcResult<ListThreadMessagesResult> = {
+      kind: "error",
+      code: "internal",
+      message: "boom",
+    };
+    expect(mergeThreadRows(inWindow, fetched)).toEqual(inWindow);
+  });
+
+  it("unions in-window and fetched rows by internal_id, newest first", () => {
+    const inWindow = [
+      row({
+        internal_id: "01H0000000000000000000C",
+        received_at: "2026-05-20T12:00:00.000Z",
+        message_id: "<c@example.com>",
+      }),
+    ];
+    const fetched = ok<ListThreadMessagesResult>({
+      messages: [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<a@example.com>",
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<b@example.com>",
+        }),
+      ],
+      next_cursor: null,
+    });
+    const out = mergeThreadRows(inWindow, fetched);
+    expect(out.map((r) => r.internal_id)).toEqual([
+      "01H0000000000000000000C",
+      "01H0000000000000000000B",
+      "01H0000000000000000000A",
+    ]);
+  });
+
+  it("dedupes by internal_id and prefers the in-window row (fresher read_at)", () => {
+    // Same internal_id, but the in-window row has a more recent inbox-poll
+    // read_at than the GSI snapshot.
+    const inWindow = [
+      row({
+        internal_id: "01H0000000000000000000A",
+        received_at: "2026-05-20T10:00:00.000Z",
+        message_id: "<a@example.com>",
+        read_at: "2026-05-21T09:00:00.000Z",
+      }),
+    ];
+    const fetched = ok<ListThreadMessagesResult>({
+      messages: [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<a@example.com>",
+          read_at: null,
+        }),
+      ],
+      next_cursor: null,
+    });
+    const out = mergeThreadRows(inWindow, fetched);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.read_at).toBe("2026-05-21T09:00:00.000Z");
+  });
+
+  it("drops parse_status=failed rows from the fetched page (the merged stack only carries ok rows)", () => {
+    const inWindow: InboxRowOk[] = [];
+    const fetched = ok<ListThreadMessagesResult>({
+      messages: [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<a@example.com>",
+        }),
+        failed(
+          "01H0000000000000000000FAIL",
+          "2026-05-20T11:00:00.000Z",
+        ),
+      ],
+      next_cursor: null,
+    });
+    const out = mergeThreadRows(inWindow, fetched);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.internal_id).toBe("01H0000000000000000000A");
   });
 });

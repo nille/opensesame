@@ -5,9 +5,11 @@ import {
   bff,
   type InboxRowOk,
   type InboxRowFailed,
+  type ListThreadMessagesResult,
+  type RpcResult,
   type StoredAttachment,
 } from "../lib/bff-client.ts";
-import type { Thread } from "../lib/threading.ts";
+import { mergeThreadRows, type Thread } from "../lib/threading.ts";
 import {
   formatBytes,
   formatRowTimestamp,
@@ -95,14 +97,38 @@ function ThreadReader({
   onReplyTo,
   keyboardEnabled,
 }: ThreadReaderProps): JSX.Element {
+  // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
+  // (rootKey starts with "<"), fetch the full thread via list_thread_messages
+  // and union with the in-window rows. Legacy rows (subject-fallback,
+  // thread_id null) keep the in-window subset only.
+  const expandable = thread.rootKey.startsWith("<");
+  const threadQuery = useQuery<RpcResult<ListThreadMessagesResult>>({
+    queryKey: ["thread", thread.rootKey],
+    queryFn: () => bff.listThreadMessages({ thread_id: thread.rootKey }),
+    enabled: expandable,
+  });
+
+  const rows = mergeThreadRows(thread.rows, threadQuery.data);
+
   // Seed the expansion set with the latest row's message_id (or its
   // internal_id when there's no message_id, which keeps the affordance
   // working for orphan rows that fell into a subject-fallback thread).
-  const lead = thread.rows[0]!;
+  const lead = rows[0]!;
   const leadKey = expansionKey(lead);
   const [expanded, setExpanded] = useState<Set<string>>(
     () => new Set([leadKey]),
   );
+
+  // If list_thread_messages later surfaces a newer row, the lead shifts;
+  // make sure the new lead's card stays expanded by default.
+  useEffect(() => {
+    setExpanded((prev) => {
+      if (prev.has(leadKey)) return prev;
+      const next = new Set(prev);
+      next.add(leadKey);
+      return next;
+    });
+  }, [leadKey]);
 
   const toggle = (key: string): void => {
     setExpanded((prev) => {
@@ -125,16 +151,14 @@ function ThreadReader({
       (e: KeyboardEvent) => {
         if (e.metaKey || e.ctrlKey || e.altKey) return;
         if (e.key === "J") {
-          const next = thread.rows.find(
-            (r) => !expanded.has(expansionKey(r)),
-          );
+          const next = rows.find((r) => !expanded.has(expansionKey(r)));
           if (next === undefined) return;
           e.preventDefault();
           setExpanded((prev) => new Set(prev).add(expansionKey(next)));
         } else if (e.key === "K") {
           // Walk bottom-up; skip the lead (rows[0]) so it stays open.
-          for (let i = thread.rows.length - 1; i > 0; i--) {
-            const row = thread.rows[i]!;
+          for (let i = rows.length - 1; i > 0; i--) {
+            const row = rows[i]!;
             const key = expansionKey(row);
             if (expanded.has(key)) {
               e.preventDefault();
@@ -148,7 +172,7 @@ function ThreadReader({
           }
         }
       },
-      [thread.rows, expanded],
+      [rows, expanded],
     ),
     keyboardEnabled,
   );
@@ -156,14 +180,17 @@ function ThreadReader({
   return (
     <section className="reader">
       <header className="reader__head reader__head--thread">
-        <h1 className="reader__subject">{subject}</h1>
+        <h1 className="reader__subject">{lead.subject ?? subject}</h1>
         <div className="reader__threadmeta mono faint">
-          {thread.count} {thread.count === 1 ? "message" : "messages"}
+          {rows.length + thread.failedRows.length}{" "}
+          {rows.length + thread.failedRows.length === 1
+            ? "message"
+            : "messages"}
           {thread.hasOutbound ? " · sent" : ""}
         </div>
       </header>
       <div className="reader__stack">
-        {thread.rows.map((row, idx) => {
+        {rows.map((row, idx) => {
           const key = expansionKey(row);
           const isOpen = expanded.has(key);
           const isLeadRow = idx === 0;

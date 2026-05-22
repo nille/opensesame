@@ -32,6 +32,7 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       markRead: vi.fn(noop),
       markReadByPrimaryKey: vi.fn(noop),
       searchEmail: vi.fn(noop),
+      listThreadMessages: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -73,6 +74,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -99,6 +101,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -144,6 +147,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -232,6 +236,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -252,6 +257,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -313,6 +319,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -345,6 +352,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -415,6 +423,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -460,6 +469,7 @@ describe("dispatch", () => {
         markRead,
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -483,6 +493,7 @@ describe("dispatch", () => {
         markRead,
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -509,6 +520,7 @@ describe("dispatch", () => {
         markRead,
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -536,6 +548,7 @@ describe("dispatch", () => {
         markRead,
         markReadByPrimaryKey,
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -567,6 +580,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey,
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -630,6 +644,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail,
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/search_email", {
@@ -717,6 +732,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -746,6 +762,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -772,6 +789,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -804,6 +822,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       sendEmail,
     });
@@ -848,6 +867,7 @@ describe("dispatch", () => {
         markRead: vi.fn(),
         markReadByPrimaryKey: vi.fn(),
         searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
       },
       sendEmail,
     });
@@ -860,5 +880,135 @@ describe("dispatch", () => {
       code: "suppressed",
       blocked_recipients: ["sender@example.com"],
     });
+  });
+
+  // ----- list_thread_messages (ADR-0027) -----
+
+  it("list_thread_messages: 400 when thread_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/list_thread_messages", {});
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "thread_id",
+    });
+  });
+
+  it("list_thread_messages: 400 when thread_id is not a string", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/list_thread_messages", {
+      thread_id: 42,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "thread_id",
+    });
+  });
+
+  it("list_thread_messages: 200 — forwards parsed input with default limit", async () => {
+    const listThreadMessages = vi.fn(async () => ({
+      messages: [],
+      next_cursor: null,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_thread_messages", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(200);
+    expect(listThreadMessages).toHaveBeenCalledWith({
+      thread_id: "<root@example.com>",
+      limit: 50,
+      cursor: null,
+    });
+    expect(r.body).toEqual({ messages: [], next_cursor: null });
+  });
+
+  it("list_thread_messages: caps limit at 200 even if a larger value is requested", async () => {
+    // ADR-0027 caps at 200 to keep a single Query bounded.
+    const listThreadMessages = vi.fn(async () => ({
+      messages: [],
+      next_cursor: null,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_thread_messages", {
+      thread_id: "<root@example.com>",
+      limit: 5000,
+    });
+    expect(r.status).toBe(200);
+    expect(listThreadMessages).toHaveBeenCalledWith({
+      thread_id: "<root@example.com>",
+      limit: 200,
+      cursor: null,
+    });
+  });
+
+  it("list_thread_messages: forwards an explicit cursor through to the reader", async () => {
+    const listThreadMessages = vi.fn(async () => ({
+      messages: [],
+      next_cursor: "next-page",
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_thread_messages", {
+      thread_id: "<root@example.com>",
+      cursor: "page-2",
+      limit: 10,
+    });
+    expect(r.status).toBe(200);
+    expect(listThreadMessages).toHaveBeenCalledWith({
+      thread_id: "<root@example.com>",
+      limit: 10,
+      cursor: "page-2",
+    });
+    expect(r.body).toMatchObject({ next_cursor: "next-page" });
+  });
+
+  it("list_thread_messages: 500 when the reader throws", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(async () => {
+          throw new Error("ddb boom");
+        }),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_thread_messages", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
   });
 });

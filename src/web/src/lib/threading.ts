@@ -13,6 +13,8 @@ import type {
   InboxRow,
   InboxRowFailed,
   InboxRowOk,
+  ListThreadMessagesResult,
+  RpcResult,
 } from "./bff-client.ts";
 
 export interface Thread {
@@ -162,6 +164,27 @@ function collectSenders(rows: InboxRowOk[]): string[] {
     out.push(name);
   }
   return out;
+}
+
+// Union the in-window rows with any extra rows list_thread_messages surfaced
+// (ADR-0027 / slice 8.9). Dedupe by internal_id — same key the inbox already
+// uses for PK identity. Sort newest-first so the lead matches the existing
+// reader-stack ordering. In-window rows win on collision: they may carry a
+// fresher `read_at` from a more recent inbox poll than the GSI page.
+export function mergeThreadRows(
+  inWindow: InboxRowOk[],
+  fetched: RpcResult<ListThreadMessagesResult> | undefined,
+): InboxRowOk[] {
+  if (fetched === undefined || fetched.kind !== "ok") return inWindow;
+  const byId = new Map<string, InboxRowOk>();
+  for (const r of fetched.value.messages) {
+    if (r.parse_status !== "ok") continue;
+    byId.set(r.internal_id, r);
+  }
+  for (const r of inWindow) byId.set(r.internal_id, r);
+  return Array.from(byId.values()).sort((a, b) =>
+    b.received_at.localeCompare(a.received_at),
+  );
 }
 
 function senderName(from: string | null): string {

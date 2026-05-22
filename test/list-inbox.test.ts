@@ -11,6 +11,7 @@ const TABLES = {
   messagesTable: "Messages-test",
   bodyChunksTable: "MessageBodyChunks-test",
   messageIdGsiName: "GSI1",
+  threadIdGsiName: "ThreadIdGSI",
 } as const;
 
 type StubClient = { send: ReturnType<typeof vi.fn> };
@@ -361,5 +362,121 @@ describe("DynamoMessageReader.listInbox", () => {
       "multipart Content-Type missing boundary parameter",
     );
     expect(failed.received_at).toBe(skeleton.received_at);
+  });
+});
+
+describe("DynamoMessageReader.listThreadMessages (ADR-0027)", () => {
+  it("queries ThreadIdGSI by thread_id ascending and returns inbox-row shape", async () => {
+    // ScanIndexForward=true — the reader stack renders oldest-first.
+    let captured: { input: Record<string, unknown> } | null = null;
+    const client = makeStubClient(async (cmd) => {
+      const c = cmd as { input: Record<string, unknown> } & { constructor: { name: string } };
+      if (c.constructor.name === "QueryCommand") {
+        captured = { input: c.input };
+        return {
+          Items: [
+            row({
+              internal_id: "01KS500000000000000000A001",
+              thread_id: "<root@example.com>",
+            }),
+            row({
+              internal_id: "01KS500000000000000000A002",
+              thread_id: "<root@example.com>",
+              message_id: "<msg-2@example.com>",
+            }),
+          ],
+          Count: 2,
+        };
+      }
+      throw new Error(`unexpected command ${c.constructor.name}`);
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.listThreadMessages({
+      thread_id: "<root@example.com>",
+      limit: 50,
+    });
+
+    expect(client.send).toHaveBeenCalledTimes(1);
+    expect(captured).not.toBeNull();
+    const sent = captured!.input;
+    expect(sent["TableName"]).toBe(TABLES.messagesTable);
+    expect(sent["IndexName"]).toBe(TABLES.threadIdGsiName);
+    expect(sent["KeyConditionExpression"]).toBe("thread_id = :tid");
+    expect(sent["ExpressionAttributeValues"]).toEqual({
+      ":tid": "<root@example.com>",
+    });
+    expect(sent["ScanIndexForward"]).toBe(true);
+    expect(sent["Limit"]).toBe(50);
+    expect(sent["ExclusiveStartKey"]).toBeUndefined();
+
+    expect(result.messages).toHaveLength(2);
+    expect(result.messages[0]!.parse_status).toBe("ok");
+    if (result.messages[0]!.parse_status !== "ok") {
+      throw new Error("expected ok row");
+    }
+    expect(result.messages[0]!.thread_id).toBe("<root@example.com>");
+    expect(result.messages[0]!.subject).toBe("Re: Q2 invoice");
+  });
+
+  it("decodes the cursor on input and re-encodes LastEvaluatedKey on output", async () => {
+    // Cursor is opaque base64-encoded LastEvaluatedKey — same shape as
+    // listInbox / searchEmail.
+    const lek = {
+      thread_id: "<root@example.com>",
+      internal_id: "01KS500000000000000000A009",
+      address: "alice@acme.com",
+    };
+    const cursor = Buffer.from(JSON.stringify(lek), "utf-8").toString("base64");
+    let captured: { input: Record<string, unknown> } | null = null;
+    const client = makeStubClient(async (cmd) => {
+      const c = cmd as { input: Record<string, unknown> } & { constructor: { name: string } };
+      if (c.constructor.name === "QueryCommand") {
+        captured = { input: c.input };
+        return {
+          Items: [],
+          LastEvaluatedKey: {
+            thread_id: "<root@example.com>",
+            internal_id: "01KS500000000000000000A019",
+            address: "alice@acme.com",
+          },
+        };
+      }
+      throw new Error(`unexpected command ${c.constructor.name}`);
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const result = await reader.listThreadMessages({
+      thread_id: "<root@example.com>",
+      limit: 10,
+      cursor,
+    });
+
+    expect(captured).not.toBeNull();
+    expect(captured!.input["ExclusiveStartKey"]).toEqual(lek);
+    expect(result.next_cursor).not.toBeNull();
+    const decoded = JSON.parse(
+      Buffer.from(result.next_cursor as string, "base64").toString("utf-8"),
+    );
+    expect(decoded["internal_id"]).toBe("01KS500000000000000000A019");
+  });
+
+  it("returns null next_cursor when there is no LastEvaluatedKey", async () => {
+    const client = makeStubClient(async () => ({ Items: [row()], Count: 1 }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const result = await reader.listThreadMessages({
+      thread_id: "<root@example.com>",
+      limit: 50,
+    });
+    expect(result.next_cursor).toBeNull();
   });
 });

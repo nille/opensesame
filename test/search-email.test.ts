@@ -16,6 +16,7 @@ const TABLES = {
   messagesTable: "Messages-test",
   bodyChunksTable: "MessageBodyChunks-test",
   messageIdGsiName: "GSI1",
+  threadIdGsiName: "ThreadIdGSI",
 } as const;
 
 type StubClient = { send: ReturnType<typeof vi.fn> };

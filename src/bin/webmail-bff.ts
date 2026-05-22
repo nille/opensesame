@@ -64,6 +64,8 @@ function main(): void {
   const rawMimeBucket = requireEnv("OPENSESAME_RAW_MIME_BUCKET");
   const messageIdGsiName =
     process.env["OPENSESAME_MESSAGE_ID_GSI_NAME"] ?? "GSI1";
+  const threadIdGsiName =
+    process.env["OPENSESAME_THREAD_ID_GSI_NAME"] ?? "ThreadIdGSI";
   const suppressionsTable =
     process.env["OPENSESAME_SUPPRESSIONS_TABLE"] ?? null;
   const configurationSetName =
@@ -94,6 +96,7 @@ function main(): void {
     messagesTable,
     bodyChunksTable,
     messageIdGsiName,
+    threadIdGsiName,
   });
   const auditLog = makeDynamoAuditLog({ client: ddb, auditTable });
   const sesClient = new SESv2Client({ region });

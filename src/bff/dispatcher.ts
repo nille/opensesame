@@ -27,6 +27,7 @@ import {
 } from "../core/reply-to-email.js";
 import type {
   ListInboxInput,
+  ListThreadMessagesInput as ReaderListThreadMessagesInput,
   MessageReader,
   SearchEmailInput as ReaderSearchEmailInput,
 } from "../core/store.js";
@@ -34,6 +35,7 @@ import { SuppressionBlockError } from "../core/suppression.js";
 import {
   parseGetAttachmentInput,
   parseGetMessageInput,
+  parseListThreadMessagesInput,
   parseMarkReadInput,
   parseReadInboxInput,
   parseReplyToEmailInput,
@@ -69,6 +71,11 @@ export type DispatchResult = {
 };
 
 const DEFAULT_INBOX_LIMIT = 50;
+// Threading conversations rarely exceed this; the cap stays bounded so a
+// single Query against the GSI is the page-size minimum, not a scan-size
+// runaway. ADR-0027 calls out 200 as the upper bound.
+const DEFAULT_THREAD_LIMIT = 50;
+const MAX_THREAD_LIMIT = 200;
 
 const RPC_PREFIX = "/rpc/";
 
@@ -97,6 +104,8 @@ export async function dispatch(
       return handleSendEmail(deps, body);
     case "reply_to_email":
       return handleReplyToEmail(deps, body);
+    case "list_thread_messages":
+      return handleListThreadMessages(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -400,6 +409,28 @@ async function handleReplyToEmail(
         },
       };
     }
+    return internalError(err);
+  }
+}
+
+async function handleListThreadMessages(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseListThreadMessagesInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const requested = parsed.value.limit ?? DEFAULT_THREAD_LIMIT;
+  const input: ReaderListThreadMessagesInput = {
+    thread_id: parsed.value.thread_id,
+    limit: Math.min(requested, MAX_THREAD_LIMIT),
+    cursor: parsed.value.cursor ?? null,
+  };
+
+  try {
+    const result = await deps.reader.listThreadMessages(input);
+    return ok(result);
+  } catch (err) {
     return internalError(err);
   }
 }

@@ -82,6 +82,8 @@ async function main(): Promise<void> {
   const bodyChunksTable = requireEnv("OPENSESAME_BODY_CHUNKS_TABLE");
   const messageIdGsiName =
     process.env["OPENSESAME_MESSAGE_ID_GSI_NAME"] ?? "GSI1";
+  const threadIdGsiName =
+    process.env["OPENSESAME_THREAD_ID_GSI_NAME"] ?? "ThreadIdGSI";
 
   const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
   const reader = makeDynamoMessageReader({
@@ -89,6 +91,7 @@ async function main(): Promise<void> {
     messagesTable,
     bodyChunksTable,
     messageIdGsiName,
+    threadIdGsiName,
   });
 
   const result = await reader.listInbox({

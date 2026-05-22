@@ -158,6 +158,11 @@ export type SearchEmailInput = {
 
 export type SearchEmailResult = ListInboxResult;
 
+// ADR-0027 (slice 8.9): list_thread_messages returns the same wire shape as
+// read_inbox / search_email. The reader stack expansion calls this on thread
+// open and merges the result with the in-window rows.
+export type ListThreadMessagesResult = ListInboxResult;
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -283,6 +288,13 @@ export const bff = {
   },
   searchEmail(input: SearchEmailInput): Promise<RpcResult<SearchEmailResult>> {
     return call<SearchEmailResult>("search_email", input);
+  },
+  listThreadMessages(input: {
+    thread_id: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<RpcResult<ListThreadMessagesResult>> {
+    return call<ListThreadMessagesResult>("list_thread_messages", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

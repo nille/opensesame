@@ -430,6 +430,59 @@ export function parseReplyToEmailInput(
   return ok(out);
 }
 
+// ---- list_thread_messages (ADR-0027) ----
+//
+// Single Query against ThreadIdGSI. No `address` in the input — the GSI
+// partition is the thread, and a thread belongs to exactly one mailbox by
+// indexing rule (every row in a thread shares an `address` because outbound
+// replies clone the inbound parent's `address`). Limit defaults to 50; the
+// dispatcher caps at 200.
+
+export type ListThreadMessagesInput = {
+  thread_id: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export function parseListThreadMessagesInput(
+  body: unknown,
+): ParseResult<ListThreadMessagesInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  const out: ListThreadMessagesInput = { thread_id: threadId };
+
+  if (obj["limit"] !== undefined) {
+    const n = obj["limit"];
+    if (
+      typeof n !== "number" ||
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n <= 0
+    ) {
+      return fail("limit", "invalid_value", "limit must be a positive integer");
+    }
+    out.limit = n;
+  }
+
+  if (obj["cursor"] !== undefined) {
+    const c = expectString(obj["cursor"]);
+    if (c === null) {
+      return fail("cursor", "invalid_type", "cursor must be a string");
+    }
+    out.cursor = c;
+  }
+
+  return ok(out);
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

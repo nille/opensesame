@@ -61,6 +61,38 @@ export class DataPlaneStack extends Stack {
       sortKey: { name: "received_at", type: AttributeType.STRING },
       projectionType: ProjectionType.ALL,
     });
+    // ADR-0027 (slice 8.9): partition by thread_id, sort by internal_id so
+    // list_thread_messages returns conversational order via a single Query.
+    // Sparse — rows without thread_id (skeleton rows, legacy pre-slice-8.8
+    // rows) are intentionally absent. INCLUDE projection covers the inbox
+    // row shape; bodies/headers blob require the base-table fallback.
+    this.messagesTable.addGlobalSecondaryIndex({
+      indexName: "ThreadIdGSI",
+      partitionKey: { name: "thread_id", type: AttributeType.STRING },
+      sortKey: { name: "internal_id", type: AttributeType.STRING },
+      projectionType: ProjectionType.INCLUDE,
+      nonKeyAttributes: [
+        "parse_status",
+        "schema_v",
+        "received_at",
+        "raw_s3_uri",
+        "message_id",
+        "from_raw",
+        "to_raw",
+        "cc_raw",
+        "reply_to_raw",
+        "subject",
+        "date_raw",
+        "in_reply_to",
+        "references_raw",
+        "auto_submitted",
+        "list_id",
+        "snippet",
+        "direction",
+        "read_at",
+        "parse_error",
+      ],
+    });
 
     this.bodyChunksTable = new Table(this, "MessageBodyChunks", {
       tableName: this.scoped("message-body-chunks"),

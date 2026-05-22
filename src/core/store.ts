@@ -224,6 +224,27 @@ export type SearchEmailResult = {
   next_cursor: string | null;
 };
 
+// list_thread_messages per ADR-0027. Single Query against ThreadIdGSI scoped
+// to one thread; ScanIndexForward=true so the conversation reads oldest-first
+// (matches the reader-stack rendering order). Cursor is opaque, same shape as
+// listInbox / searchEmail (base64-encoded LastEvaluatedKey under the hood).
+//
+// No `address` in the input — the GSI partition is the thread, and a thread
+// belongs to exactly one mailbox (every row in a thread shares an `address`
+// because outbound replies clone the inbound parent's `address`). The
+// indexing rule guarantees colocation, so cross-mailbox leakage is not
+// possible by construction.
+export type ListThreadMessagesInput = {
+  thread_id: string;
+  limit: number;
+  cursor?: string | null;
+};
+
+export type ListThreadMessagesResult = {
+  messages: InboxRow[];
+  next_cursor: string | null;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -264,4 +285,13 @@ export interface MessageReader {
   // out per-message body-chunk Queries for any rows that didn't already
   // match on metadata. Cursor opacity matches listInbox.
   searchEmail(input: SearchEmailInput): Promise<SearchEmailResult>;
+  // ADR-0027 (slice 8.9): paginated read of every Messages row sharing a
+  // thread_id. Implementations Query against ThreadIdGSI ascending by
+  // internal_id (== oldest-first by received-at-millisecond, with ULID
+  // tiebreaks). Skeleton rows (parse_status="failed") never carry a thread_id
+  // and so never appear here in practice, but the return type stays unified
+  // with listInbox/searchEmail so the wire shape is identical.
+  listThreadMessages(
+    input: ListThreadMessagesInput,
+  ): Promise<ListThreadMessagesResult>;
 }

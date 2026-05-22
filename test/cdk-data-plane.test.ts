@@ -53,6 +53,45 @@ describe("DataPlaneStack — Messages table", () => {
     });
   });
 
+  it("provisions ThreadIdGSI on thread_id (PK) + internal_id (SK) (ADR-0027)", () => {
+    // ThreadIdGSI is the read path for list_thread_messages. Sparse — rows
+    // without thread_id (skeleton rows + legacy pre-slice-8.8 rows) sit out
+    // of the index. Projection is INCLUDE rather than ALL so the GSI item
+    // size stays bounded; body chunks + headers_blob still resolve via the
+    // base-table primary key.
+    const t = synth();
+    t.hasResourceProperties("AWS::DynamoDB::Table", {
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "ThreadIdGSI",
+          KeySchema: [
+            { AttributeName: "thread_id", KeyType: "HASH" },
+            { AttributeName: "internal_id", KeyType: "RANGE" },
+          ],
+          Projection: Match.objectLike({
+            ProjectionType: "INCLUDE",
+            // Match.arrayWith requires the patterns to appear in order, so the
+            // sequence below mirrors the construct's NonKeyAttributes order.
+            NonKeyAttributes: Match.arrayWith([
+              "parse_status",
+              "schema_v",
+              "received_at",
+              "message_id",
+              "from_raw",
+              "subject",
+              "snippet",
+              "direction",
+              "read_at",
+            ]),
+          }),
+        }),
+      ]),
+      AttributeDefinitions: Match.arrayWith([
+        { AttributeName: "thread_id", AttributeType: "S" },
+      ]),
+    });
+  });
+
   it("enables PITR on Messages (ADR-0012 backups)", () => {
     const t = synth();
     t.hasResourceProperties("AWS::DynamoDB::Table", {
