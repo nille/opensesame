@@ -517,6 +517,75 @@ export function parseStarThreadInput(
   return ok({ thread_id: threadId, starred: obj["starred"] });
 }
 
+// ---- snooze_thread (ADR-0029) ----
+//
+// Toggle the snooze annotation on every row in a thread. `snoozed_until`
+// is a wake-time ISO-8601 string when snoozing or null when unsnoozing.
+// The dispatcher fans out per-row UpdateItems via ThreadIdGSI; the input
+// is just the thread identity and the desired wake time.
+//
+// `snoozed_until` is required (rather than defaulting to "now or null") so
+// the wire shape is self-documenting: an explicit null means "unsnooze",
+// a string means "snooze until this time". The past-time guard rejects
+// snoozing into history — a typo'd wake time is friendlier as a 400
+// than as a silent no-op.
+
+export type SnoozeThreadInput = {
+  thread_id: string;
+  snoozed_until: string | null;
+};
+
+export function parseSnoozeThreadInput(
+  body: unknown,
+  now: Date = new Date(),
+): ParseResult<SnoozeThreadInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  if (!("snoozed_until" in obj)) {
+    return fail(
+      "snoozed_until",
+      "missing",
+      "snoozed_until is required (ISO-8601 string to snooze, null to unsnooze)",
+    );
+  }
+
+  const raw = obj["snoozed_until"];
+  if (raw === null) {
+    return ok({ thread_id: threadId, snoozed_until: null });
+  }
+  if (typeof raw !== "string") {
+    return fail(
+      "snoozed_until",
+      "invalid_type",
+      "snoozed_until must be a string or null",
+    );
+  }
+  const parsed = Date.parse(raw);
+  if (!Number.isFinite(parsed)) {
+    return fail(
+      "snoozed_until",
+      "invalid_value",
+      "snoozed_until is not a parseable ISO-8601 timestamp",
+    );
+  }
+  if (parsed <= now.getTime()) {
+    return fail(
+      "snoozed_until",
+      "invalid_value",
+      "snoozed_until must be in the future",
+    );
+  }
+  return ok({ thread_id: threadId, snoozed_until: raw });
+}
+
 // ---- helpers ----
 
 function expectObject(v: unknown): Record<string, unknown> | null {

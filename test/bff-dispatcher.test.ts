@@ -34,6 +34,7 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       searchEmail: vi.fn(noop),
       listThreadMessages: vi.fn(noop),
       starThread: vi.fn(noop),
+      snoozeThread: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -77,6 +78,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -105,6 +107,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -142,6 +145,7 @@ describe("dispatch", () => {
       read_at: null,
       thread_id: null,
       starred_at: null,
+      snoozed_until: null,
     };
     const deps = makeDeps({
       reader: {
@@ -153,6 +157,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -243,6 +248,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -265,6 +271,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -316,6 +323,7 @@ describe("dispatch", () => {
       read_at: null,
       thread_id: null,
       starred_at: null,
+      snoozed_until: null,
     };
     const presign = vi.fn();
     const deps: BffDeps = {
@@ -329,6 +337,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -363,6 +372,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -420,6 +430,7 @@ describe("dispatch", () => {
       read_at: null,
       thread_id: null,
       starred_at: null,
+      snoozed_until: null,
     };
     const presign = vi.fn(async () => ({
       url: "https://s3.example.com/signed-url",
@@ -436,6 +447,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -483,6 +495,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -508,6 +521,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -536,6 +550,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -565,6 +580,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -598,6 +614,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -663,6 +680,7 @@ describe("dispatch", () => {
         searchEmail,
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/search_email", {
@@ -715,6 +733,7 @@ describe("dispatch", () => {
       read_at: null,
       thread_id: null,
       starred_at: null,
+      snoozed_until: null,
       ...over,
     };
   }
@@ -753,6 +772,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -784,6 +804,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -812,6 +833,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -846,6 +868,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       sendEmail,
     });
@@ -892,6 +915,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
       sendEmail,
     });
@@ -943,6 +967,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages,
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -973,6 +998,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages,
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1002,6 +1028,7 @@ describe("dispatch", () => {
         searchEmail: vi.fn(),
         listThreadMessages,
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1031,6 +1058,7 @@ describe("dispatch", () => {
           throw new Error("ddb boom");
         }),
         starThread: vi.fn(),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1091,6 +1119,7 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread,
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1128,6 +1157,7 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         searchEmail: vi.fn(),
         listThreadMessages: vi.fn(),
         starThread,
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1151,11 +1181,199 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         starThread: vi.fn(async () => {
           throw new Error("ddb boom");
         }),
+        snoozeThread: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
       thread_id: "<root@example.com>",
       starred: true,
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+// ADR-0029 (slice 8.11). Same status-code shape as star_thread — empty
+// thread is a 200 no-op rather than 404. The dispatcher threads a single
+// `now` through parseSnoozeThreadInput and reader.snoozeThread so the past-
+// time guard and the reader's snapshot agree on a single instant.
+describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
+  // Wake times far enough in the future that a slow CI run can't drift past
+  // them while the test executes.
+  const FUTURE = "2099-01-01T00:00:00.000Z";
+  const PAST = "2000-01-01T00:00:00.000Z";
+
+  it("snooze_thread: 400 when thread_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/snooze_thread", {
+      snoozed_until: FUTURE,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "thread_id",
+    });
+  });
+
+  it("snooze_thread: 400 when snoozed_until is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "snoozed_until",
+    });
+  });
+
+  it("snooze_thread: 400 when snoozed_until is not a string or null", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: 12345,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "snoozed_until",
+    });
+  });
+
+  it("snooze_thread: 400 when snoozed_until is unparseable ISO", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: "not a date",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "snoozed_until",
+    });
+  });
+
+  it("snooze_thread: 400 when snoozed_until is in the past — typo'd wake time, not silent no-op", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: PAST,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "snoozed_until",
+    });
+  });
+
+  it("snooze_thread: 200 — forwards parsed input and echoes the reader result (snoozing)", async () => {
+    const snoozeThread = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      snoozed_until: FUTURE,
+      updated_count: 3,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: FUTURE,
+    });
+    expect(r.status).toBe(200);
+    expect(snoozeThread).toHaveBeenCalledTimes(1);
+    expect(snoozeThread).toHaveBeenCalledWith(
+      { thread_id: "<root@example.com>", snoozed_until: FUTURE },
+      expect.any(Date),
+    );
+    expect(r.body).toEqual({
+      thread_id: "<root@example.com>",
+      snoozed_until: FUTURE,
+      updated_count: 3,
+    });
+  });
+
+  it("snooze_thread: 200 — forwards null snoozed_until for unsnoozing", async () => {
+    const snoozeThread = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      snoozed_until: null,
+      updated_count: 2,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: null,
+    });
+    expect(r.status).toBe(200);
+    expect(snoozeThread).toHaveBeenCalledWith(
+      { thread_id: "<root@example.com>", snoozed_until: null },
+      expect.any(Date),
+    );
+    expect(r.body).toMatchObject({ snoozed_until: null, updated_count: 2 });
+  });
+
+  it("snooze_thread: 200 with updated_count 0 for an empty thread (no rows → no-op, not 404)", async () => {
+    const snoozeThread = vi.fn(async () => ({
+      thread_id: "<orphan@example.com>",
+      snoozed_until: FUTURE,
+      updated_count: 0,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/snooze_thread", {
+      thread_id: "<orphan@example.com>",
+      snoozed_until: FUTURE,
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ updated_count: 0 });
+  });
+
+  it("snooze_thread: 500 when the reader throws", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(async () => {
+          throw new Error("ddb boom");
+        }),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/snooze_thread", {
+      thread_id: "<root@example.com>",
+      snoozed_until: FUTURE,
     });
     expect(r.status).toBe(500);
     expect(r.body).toMatchObject({ code: "internal_error" });

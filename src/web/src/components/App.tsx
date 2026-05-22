@@ -43,7 +43,7 @@ type PaneState =
       replyParentId: string | null;
     };
 
-type View = "inbox" | "sent" | "starred";
+type View = "inbox" | "sent" | "starred" | "snoozed";
 
 export function App(): JSX.Element {
   const { theme, toggle } = useTheme();
@@ -62,6 +62,16 @@ export function App(): JSX.Element {
   const [pendingStars, setPendingStars] = useState<Map<string, boolean>>(
     () => new Map(),
   );
+  // ADR-0029 (slice 8.11). Same pattern as pendingStars but the value is
+  // either an ISO wake-time (snoozing) or null (unsnoozing). Mixing the
+  // two intents in one map keeps the map's "no entry === server-authoritative"
+  // semantics regardless of which direction the operator picked.
+  const [pendingSnoozes, setPendingSnoozes] = useState<
+    Map<string, string | null>
+  >(() => new Map());
+  // The reader-header snooze picker is controlled so the global `z` shortcut
+  // can pop it open while keeping the gutter pickers self-managed.
+  const [readerSnoozePickerOpen, setReaderSnoozePickerOpen] = useState(false);
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", MAILBOX],
@@ -108,13 +118,31 @@ export function App(): JSX.Element {
     [allMessages],
   );
 
+  // ADR-0029 (slice 8.11). The inbox view hides snoozed threads — that's
+  // the whole point of snooze. Pending intents win over server state so the
+  // operator's freshly-picked snooze removes the row instantly (and a
+  // pending unsnooze surfaces a row that was snoozed mid-poll). The
+  // Starred and Snoozed views deliberately don't apply this filter:
+  // starred snoozed threads stay visible in Starred (operator intent),
+  // and Snoozed is the very list of these rows.
+  const isSnoozedNow = useCallback(
+    (t: Thread): boolean => {
+      const pending = pendingSnoozes.get(t.rootKey);
+      if (pending !== undefined) return pending !== null;
+      return t.snoozed;
+    },
+    [pendingSnoozes],
+  );
+
   const inboxThreads = useMemo(
     () =>
       allThreads.filter(
         (t) =>
-          t.failedRows.length > 0 || t.rows.some((r) => r.direction === "in"),
+          (t.failedRows.length > 0 ||
+            t.rows.some((r) => r.direction === "in")) &&
+          !isSnoozedNow(t),
       ),
-    [allThreads],
+    [allThreads, isSnoozedNow],
   );
 
   const sentThreads = useMemo(
@@ -142,13 +170,30 @@ export function App(): JSX.Element {
     [searchMessages],
   );
 
+  // Snoozed view: ascending by wake-time so the next thread to surface
+  // sits at the top, mirroring "what wakes next?" reading order. Pending
+  // intents are applied via isSnoozedNow upstream of the sort so a
+  // freshly-snoozed thread joins the list in real time.
+  const snoozedThreads = useMemo<Thread[]>(() => {
+    const list = allThreads.filter((t) => isSnoozedNow(t));
+    return list.slice().sort((a, b) => {
+      const aPending = pendingSnoozes.get(a.rootKey);
+      const bPending = pendingSnoozes.get(b.rootKey);
+      const aUntil = (aPending ?? a.snoozedUntil) ?? "";
+      const bUntil = (bPending ?? b.snoozedUntil) ?? "";
+      return aUntil.localeCompare(bUntil);
+    });
+  }, [allThreads, isSnoozedNow, pendingSnoozes]);
+
   const threads = searchActive
     ? searchThreads
     : view === "inbox"
       ? inboxThreads
       : view === "starred"
         ? starredThreads
-        : sentThreads;
+        : view === "snoozed"
+          ? snoozedThreads
+          : sentThreads;
 
   // Rail counts stay as message counts (per ADR-0023): triage volume is
   // what the operator wants to see, not conversation count.
@@ -170,6 +215,7 @@ export function App(): JSX.Element {
   // The Starred view's primary unit is the conversation, and the count
   // doubles as a calm "how many am I tracking" cue.
   const starredThreadCount = starredThreads.length;
+  const snoozedThreadCount = snoozedThreads.length;
 
   // Kept around for the search-loading skeleton check.
   const messages = searchActive ? searchMessages : allMessages;
@@ -212,6 +258,14 @@ export function App(): JSX.Element {
   useEffect(() => {
     setSelectedIdx(0);
   }, [searchActive, debouncedQuery]);
+
+  // Close the reader's snooze picker whenever the selected thread changes
+  // — leaving it open across selections produces a popover anchored to a
+  // stale row and confuses the operator about which thread the picker
+  // applies to.
+  useEffect(() => {
+    setReaderSnoozePickerOpen(false);
+  }, [selectedIdx, view, searchActive]);
 
   const openCompose = useCallback((seed: ComposerSeed | null) => {
     setPane({ mode: "composer", seed, replyParentId: null });
@@ -291,6 +345,42 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0029 (slice 8.11). Toggle snooze on every row in the thread.
+  // Optimistic write keyed by rootKey (=== server thread_id for any
+  // server-stamped thread). Mirrors toggleStar: stamp intent → fire RPC
+  // → drop on success / roll back on failure. The map distinguishes
+  // "no entry" (server-authoritative) from a literal `null` value
+  // (in-flight unsnooze), so .has() / .get() both behave correctly.
+  const pickSnooze = useCallback(
+    (rootKey: string, snoozedUntil: string | null): void => {
+      if (!rootKey.startsWith("<")) return;
+      setPendingSnoozes((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, snoozedUntil);
+        return m;
+      });
+      void bff
+        .snoozeThread({ thread_id: rootKey, snoozed_until: snoozedUntil })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            setPendingSnoozes((prev) => {
+              const m = new Map(prev);
+              m.delete(rootKey);
+              return m;
+            });
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          setPendingSnoozes((prev) => {
+            const m = new Map(prev);
+            m.delete(rootKey);
+            return m;
+          });
+        });
+    },
+    [queryClient],
+  );
+
   // Resolve the parent for reply mode. Reuses the same ["message", id] cache
   // entry that the Reader populated, so this is a free hit in the common case.
   const replyParentId =
@@ -350,6 +440,27 @@ export function App(): JSX.Element {
           const pending = pendingStars.get(t.rootKey);
           const current = pending ?? t.starred;
           toggleStar(t.rootKey, !current);
+        } else if (e.key === "z") {
+          // Slice 8.11. Open the picker for the selected thread.
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          setReaderSnoozePickerOpen(true);
+        } else if (e.key === "Z") {
+          // Capital Z is the immediate-unsnooze shortcut — bypasses the
+          // picker so power-users can wake a thread with one keystroke.
+          // No-op when the thread isn't currently snoozed (including a
+          // pending unsnooze that hasn't returned yet).
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          const pending = pendingSnoozes.get(t.rootKey);
+          const currentlySnoozed =
+            pending !== undefined ? pending !== null : t.snoozed;
+          if (!currentlySnoozed) return;
+          e.preventDefault();
+          pickSnooze(t.rootKey, null);
         } else if (e.key === "/") {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -364,6 +475,7 @@ export function App(): JSX.Element {
               "/        focus search",
               "r        reply to latest in thread",
               "s        star / unstar selected thread",
+              "z / Z    snooze (picker) / unsnooze immediately",
               "c        compose new",
               "t        toggle theme",
               "esc      close composer / clear search",
@@ -380,7 +492,9 @@ export function App(): JSX.Element {
         threads,
         selectedIdx,
         pendingStars,
+        pendingSnoozes,
         toggleStar,
+        pickSnooze,
         openCompose,
         replyToCurrent,
         toggle,
@@ -413,6 +527,7 @@ export function App(): JSX.Element {
         inboxCount={inboxMessageCount}
         sentCount={sentMessageCount}
         starredCount={starredThreadCount}
+        snoozedCount={snoozedThreadCount}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
@@ -433,6 +548,8 @@ export function App(): JSX.Element {
         searchActive={searchActive}
         pendingStars={pendingStars}
         onToggleStar={toggleStar}
+        pendingSnoozes={pendingSnoozes}
+        onPickSnooze={pickSnooze}
       />
       {pane.mode === "reader" ? (
         (() => {
@@ -442,6 +559,14 @@ export function App(): JSX.Element {
           const t = threads[selectedIdx] ?? null;
           const pending = t === null ? undefined : pendingStars.get(t.rootKey);
           const filled = t === null ? false : (pending ?? t.starred);
+          const snoozePending =
+            t === null ? undefined : pendingSnoozes.get(t.rootKey);
+          const snoozedUntil =
+            t === null
+              ? null
+              : snoozePending !== undefined
+                ? snoozePending
+                : t.snoozedUntil;
           return (
             <Reader
               // key remounts the Reader on thread change so the in-card
@@ -455,6 +580,11 @@ export function App(): JSX.Element {
               starFilled={filled}
               starPending={pending !== undefined}
               onToggleStar={toggleStar}
+              snoozedUntil={snoozedUntil}
+              snoozePending={snoozePending !== undefined}
+              onPickSnooze={pickSnooze}
+              snoozePickerOpen={readerSnoozePickerOpen}
+              onSnoozePickerOpenChange={setReaderSnoozePickerOpen}
             />
           );
         })()

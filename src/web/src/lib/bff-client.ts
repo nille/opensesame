@@ -129,6 +129,11 @@ export type InboxRowOk = {
   // written before this slice or never starred. groupIntoThreads aggregates
   // any starred row → starred thread.
   starred_at: string | null;
+  // ADR-0029 (slice 8.11): per-row sparse snooze wake-time. null on rows
+  // never snoozed. groupIntoThreads aggregates "every row unexpired →
+  // snoozed", so a fresh inbound reply (no snoozed_until) auto-wakes the
+  // conversation.
+  snoozed_until: string | null;
 };
 
 export type InboxRowFailed = {
@@ -182,6 +187,20 @@ export type StarThreadResult = {
   updated_count: number;
 };
 
+// ADR-0029 (slice 8.11): toggle the snooze annotation on every row in the
+// thread. snoozed_until is the wake-time ISO when snoozing, or null when
+// unsnoozing. Past wake times are rejected by the BFF (400).
+export type SnoozeThreadInput = {
+  thread_id: string;
+  snoozed_until: string | null;
+};
+
+export type SnoozeThreadResult = {
+  thread_id: string;
+  snoozed_until: string | null;
+  updated_count: number;
+};
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -223,6 +242,8 @@ export type ReadMessageOk = {
   thread_id: string | null;
   // ADR-0028 (slice 8.10): per-row sparse star annotation.
   starred_at: string | null;
+  // ADR-0029 (slice 8.11): per-row sparse snooze wake-time.
+  snoozed_until: string | null;
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -319,6 +340,11 @@ export const bff = {
   },
   starThread(input: StarThreadInput): Promise<RpcResult<StarThreadResult>> {
     return call<StarThreadResult>("star_thread", input);
+  },
+  snoozeThread(
+    input: SnoozeThreadInput,
+  ): Promise<RpcResult<SnoozeThreadResult>> {
+    return call<SnoozeThreadResult>("snooze_thread", input);
   },
   sendEmail(input: SendEmailInput): Promise<RpcResult<SendEmailResult>> {
     return call<SendEmailResult>("send_email", input);

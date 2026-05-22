@@ -129,6 +129,12 @@ export type ReadMessageOk = {
   // unstarred. The client's groupIntoThreads aggregates "any starred row →
   // starred thread."
   starred_at: string | null;
+  // ADR-0029 (slice 8.11): per-row sparse snooze annotation. ISO-8601 wake
+  // time. Attribute-absent → null → not snoozed. Snooze is per-thread
+  // fan-out like star, but the aggregation rule is "every row carries an
+  // unexpired snoozed_until → snoozed", so a fresh inbound reply (which
+  // arrives without the attribute) auto-wakes the conversation.
+  snoozed_until: string | null;
 };
 
 export type ReadMessageFailed = {
@@ -177,6 +183,10 @@ export type InboxRowOk = {
   // sidebar entry filters the in-window inbox rows client-side via
   // groupIntoThreads.
   starred_at: string | null;
+  // ADR-0029 (slice 8.11): per-row sparse snooze annotation. The Snoozed
+  // sidebar entry filters in-window threads client-side; wake-on-reply
+  // falls out of the "every row unexpired → snoozed" aggregation.
+  snoozed_until: string | null;
 };
 
 export type InboxRowFailed = {
@@ -273,6 +283,28 @@ export type StarThreadResult = {
   updated_count: number;
 };
 
+// snooze_thread per ADR-0029. `snoozed_until: <iso>` stamps that wake time
+// on every row in the thread; `snoozed_until: null` removes the attribute.
+// Like star, snooze is a UI toggle — re-snoozing overwrites the wake time
+// rather than preserving first-snooze-wins. updated_count reports how many
+// rows were actually written; an empty thread returns 0 rather than 404 so
+// a stale inbox-window rollup doesn't surface as an error.
+//
+// The wake-on-reply behavior is handled on the read side (the client
+// aggregation rule treats an unstamped row as "this conversation is
+// awake"). The write path doesn't know about thread freshness; it just
+// stamps the rows it resolves via ThreadIdGSI at the moment of the call.
+export type SnoozeThreadInput = {
+  thread_id: string;
+  snoozed_until: string | null;
+};
+
+export type SnoozeThreadResult = {
+  thread_id: string;
+  snoozed_until: string | null;
+  updated_count: number;
+};
+
 // Result of mark_read. Distinguishes a no-op (already read) from a fresh
 // stamp so the BFF can return both 200 paths without a write churn for the
 // idempotent case. `not_found` is its own variant so the dispatcher can map
@@ -328,4 +360,14 @@ export interface MessageReader {
   // stale primary key cannot create a phantom row. Plain SET / REMOVE on
   // starred_at — star is a UI toggle, not a first-event timestamp.
   starThread(input: StarThreadInput, now: Date): Promise<StarThreadResult>;
+  // ADR-0029 (slice 8.11): toggle the snooze annotation on every row in
+  // the thread. Same fan-out shape as starThread; `snoozed_until: <iso>`
+  // sets the wake time, `null` removes the attribute. The `now` parameter
+  // is used only to timestamp the operation in tests / diagnostics —
+  // past-time validation lives in the BFF schema, the reader trusts its
+  // input.
+  snoozeThread(
+    input: SnoozeThreadInput,
+    now: Date,
+  ): Promise<SnoozeThreadResult>;
 }

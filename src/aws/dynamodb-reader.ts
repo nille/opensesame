@@ -26,6 +26,8 @@ import type {
   ReadMessageOk,
   SearchEmailInput,
   SearchEmailResult,
+  SnoozeThreadInput,
+  SnoozeThreadResult,
   StarThreadInput,
   StarThreadResult,
   StoredAttachment,
@@ -63,6 +65,7 @@ export function makeDynamoMessageReader(
     searchEmail: (input) => searchEmail(deps, input),
     listThreadMessages: (input) => listThreadMessages(deps, input),
     starThread: (input, now) => starThread(deps, input, now),
+    snoozeThread: (input, now) => snoozeThread(deps, input, now),
   };
 }
 
@@ -178,6 +181,7 @@ function projectOk(
     read_at: nullableString(row["read_at"]),
     thread_id: nullableString(row["thread_id"]),
     starred_at: nullableString(row["starred_at"]),
+    snoozed_until: nullableString(row["snoozed_until"]),
   };
 }
 
@@ -305,6 +309,7 @@ function projectInboxRow(row: Record<string, unknown>): InboxRow {
     read_at: nullableString(row["read_at"]),
     thread_id: nullableString(row["thread_id"]),
     starred_at: nullableString(row["starred_at"]),
+    snoozed_until: nullableString(row["snoozed_until"]),
   };
   return ok;
 }
@@ -669,6 +674,82 @@ async function starThread(
     thread_id: input.thread_id,
     starred: input.starred,
     starred_at: input.starred ? isoNow : null,
+    updated_count,
+  };
+}
+
+// ADR-0029 (slice 8.11). Same fan-out shape as starThread; the only
+// differences are the attribute name (`snoozed_until` vs `starred_at`)
+// and the value source (the operator-supplied wake-time ISO instead of
+// `now`). Past-time validation lives in the BFF schema — by the time
+// the reader is called, `input.snoozed_until` is either null (unsnooze)
+// or a future ISO string. The MAX_THREAD_LIMIT cap is shared with star
+// and list_thread_messages.
+async function snoozeThread(
+  deps: DynamoMessageReaderDeps,
+  input: SnoozeThreadInput,
+  _now: Date,
+): Promise<SnoozeThreadResult> {
+  // Step 1: resolve every primary key in the thread via the GSI. Project
+  // only the PK pair so this stays at one RCU per row.
+  const out = await deps.client.send(
+    new QueryCommand({
+      TableName: deps.messagesTable,
+      IndexName: deps.threadIdGsiName,
+      KeyConditionExpression: "thread_id = :tid",
+      ExpressionAttributeValues: { ":tid": input.thread_id },
+      ProjectionExpression: "address, internal_id",
+      Limit: MAX_STAR_FAN_OUT,
+    }),
+  );
+  const rows = out.Items ?? [];
+
+  if (rows.length === 0) {
+    return {
+      thread_id: input.thread_id,
+      snoozed_until: input.snoozed_until,
+      updated_count: 0,
+    };
+  }
+
+  // Step 2: fan out the per-row writes in parallel. Same phantom-row
+  // guard and ConditionalCheckFailed tolerance as starThread.
+  const wakeAt = input.snoozed_until;
+  const results = await Promise.all(
+    rows.map(async (r) => {
+      const address = String(r["address"]);
+      const internalId = String(r["internal_id"]);
+      const cmd =
+        wakeAt !== null
+          ? new UpdateCommand({
+              TableName: deps.messagesTable,
+              Key: { address, internal_id: internalId },
+              UpdateExpression: "SET snoozed_until = :wake",
+              ConditionExpression: "attribute_exists(#addr)",
+              ExpressionAttributeNames: { "#addr": "address" },
+              ExpressionAttributeValues: { ":wake": wakeAt },
+            })
+          : new UpdateCommand({
+              TableName: deps.messagesTable,
+              Key: { address, internal_id: internalId },
+              UpdateExpression: "REMOVE snoozed_until",
+              ConditionExpression: "attribute_exists(#addr)",
+              ExpressionAttributeNames: { "#addr": "address" },
+            });
+      try {
+        await deps.client.send(cmd);
+        return true;
+      } catch (err) {
+        if (err instanceof ConditionalCheckFailedException) return false;
+        throw err;
+      }
+    }),
+  );
+
+  const updated_count = results.filter(Boolean).length;
+  return {
+    thread_id: input.thread_id,
+    snoozed_until: input.snoozed_until,
     updated_count,
   };
 }

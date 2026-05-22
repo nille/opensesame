@@ -42,6 +42,17 @@ export interface Thread {
   // means a stale window where one row hasn't been re-fetched yet still
   // reads as starred — matches operator intent.
   starred: boolean;
+  // ADR-0029 (slice 8.11): true when every parsed row carries an unexpired
+  // `snoozed_until`. Aggregating with AND (vs star's OR) is what gives us
+  // wake-on-reply for free — a fresh inbound row arrives without
+  // `snoozed_until` and the thread auto-wakes. Failed/skeleton rows don't
+  // affect the predicate (they can't be snoozed); a thread that's ONLY
+  // skeletons reads as not snoozed.
+  snoozed: boolean;
+  // The earliest unexpired `snoozed_until` across the rows. Null when not
+  // snoozed. Drives the "snoozed until 9am" affordance and the Snoozed
+  // sidebar's ascending sort.
+  snoozedUntil: string | null;
   // rows.length + failedRows.length. >1 means render the count chip.
   count: number;
 }
@@ -51,7 +62,14 @@ const MSG_ID_RE = /<[^<>\s]+@[^<>\s]+>/g;
 // stay intact, same call as the server's reply subject canonicalization.
 const PREFIX_RUN_RE = /^(?:\s*(?:re|fwd?|fw)\s*:\s*)+/i;
 
-export function groupIntoThreads(rows: InboxRow[]): Thread[] {
+// `now` is injected so callers can pin the wake-time predicate to a fixed
+// instant (tests; deterministic re-renders during one React tick). Default
+// to the actual clock so the live UI sees expired snoozes wake on the
+// next inbox poll.
+export function groupIntoThreads(
+  rows: InboxRow[],
+  now: Date = new Date(),
+): Thread[] {
   const okRows: InboxRowOk[] = [];
   const failedRows: InboxRowFailed[] = [];
   for (const r of rows) {
@@ -78,15 +96,62 @@ export function groupIntoThreads(rows: InboxRow[]): Thread[] {
       unread: false,
       hasOutbound: false,
       starred: false,
+      snoozed: false,
+      snoozedUntil: null,
       count: 1,
     };
     buckets.set(key, t);
   }
 
   const threads = Array.from(buckets.values());
+  // Snooze aggregation needs the full row set per thread, so compute it as
+  // a final pass once upsert has finished collecting rows (vs star/unread
+  // which are short-circuit OR and can be computed during upsert).
+  const nowMs = now.getTime();
+  for (const t of threads) {
+    annotateSnooze(t, nowMs);
+  }
   // Sort newest-first by the thread's most-recent message.
   threads.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
   return threads;
+}
+
+// snoozed iff every parsed row carries an unexpired snoozed_until. A thread
+// of skeletons-only is not snoozable (no rows on the GSI). snoozedUntil is
+// the earliest unexpired wake time across the rows — that's the moment the
+// thread will reappear, which is what "snoozed until X" should display.
+function annotateSnooze(t: Thread, nowMs: number): void {
+  if (t.rows.length === 0) {
+    t.snoozed = false;
+    t.snoozedUntil = null;
+    return;
+  }
+  let earliest: string | null = null;
+  let earliestMs = Number.POSITIVE_INFINITY;
+  for (const r of t.rows) {
+    const su = r.snoozed_until;
+    if (su === null) {
+      // Wake-on-reply: a single unstamped row wakes the conversation.
+      t.snoozed = false;
+      t.snoozedUntil = null;
+      return;
+    }
+    const ms = Date.parse(su);
+    if (!Number.isFinite(ms) || ms <= nowMs) {
+      // Expired (or unparseable) snooze on this row → also a wake. We treat
+      // an unparseable timestamp as the safer "awake" state so a corrupt
+      // row can't permanently pin a thread out of the inbox.
+      t.snoozed = false;
+      t.snoozedUntil = null;
+      return;
+    }
+    if (ms < earliestMs) {
+      earliestMs = ms;
+      earliest = su;
+    }
+  }
+  t.snoozed = true;
+  t.snoozedUntil = earliest;
 }
 
 function upsert(
@@ -105,6 +170,8 @@ function upsert(
       unread: false,
       hasOutbound: false,
       starred: false,
+      snoozed: false,
+      snoozedUntil: null,
       count: 0,
     };
     buckets.set(key, t);

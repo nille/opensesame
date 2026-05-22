@@ -5,7 +5,9 @@ import {
   senderDisplay,
   shortMessageId,
 } from "../lib/format.ts";
+import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { StarButton } from "./Star.tsx";
+import { SnoozeButton } from "./Snooze.tsx";
 
 interface InboxListProps {
   threads: Thread[];
@@ -21,6 +23,11 @@ interface InboxListProps {
   // the next inbox poll lands and the entry is dropped from the map.
   pendingStars: Map<string, boolean>;
   onToggleStar: (rootKey: string, next: boolean) => void;
+  // Slice 8.11 (ADR-0029). Same shape as pendingStars, but the value is
+  // either an ISO wake-time (snoozing) or null (unsnoozing). Drives the
+  // optimistic snooze indicator + meta-strip footer.
+  pendingSnoozes: Map<string, string | null>;
+  onPickSnooze: (rootKey: string, snoozedUntil: string | null) => void;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -36,6 +43,8 @@ export function InboxList({
   searchActive = false,
   pendingStars,
   onToggleStar,
+  pendingSnoozes,
+  onPickSnooze,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -116,13 +125,19 @@ export function InboxList({
         const senderLine = renderSenders(thread.senders);
         const messageIdExcerpt = shortMessageId(lead.message_id, 14);
         const showSentChip = lead.direction === "out";
-        // Star can only be toggled on threads with a server-stamped thread_id
-        // (rootKey starts with "<" — same gate as ThreadReader expansion).
-        // Subject-fallback rollups have no stable handle to address an
-        // UpdateItem fan-out against.
-        const starrable = thread.rootKey.startsWith("<");
+        // Star + snooze can only be toggled on threads with a server-stamped
+        // thread_id (rootKey starts with "<" — same gate as ThreadReader
+        // expansion). Subject-fallback rollups have no stable handle to
+        // address an UpdateItem fan-out against.
+        const threadable = thread.rootKey.startsWith("<");
         const pending = pendingStars.get(thread.rootKey);
         const filled = pending ?? thread.starred;
+        // Snooze: pending intent wins over server state for both the icon and
+        // the meta-strip footer. A pending null (unsnooze) reads as not
+        // snoozed, an ISO wake-time reads as snoozed-until-that-ISO.
+        const pendingSnooze = pendingSnoozes.get(thread.rootKey);
+        const snoozedUntil =
+          pendingSnooze !== undefined ? pendingSnooze : thread.snoozedUntil;
 
         return (
           <div
@@ -151,10 +166,18 @@ export function InboxList({
               <StarButton
                 filled={filled}
                 pending={pending !== undefined}
-                disabled={!starrable}
+                disabled={!threadable}
                 variant="gutter"
                 stopPropagation
                 onToggle={(next) => onToggleStar(thread.rootKey, next)}
+              />
+              <SnoozeButton
+                snoozedUntil={snoozedUntil}
+                pending={pendingSnooze !== undefined}
+                disabled={!threadable}
+                variant="gutter"
+                stopPropagation
+                onPickPreset={(next) => onPickSnooze(thread.rootKey, next)}
               />
             </div>
             <div className="inbox-row__main">
@@ -172,6 +195,12 @@ export function InboxList({
                 ) : null}
                 {showSentChip ? (
                   <span className="inbox-row__chip mono"> sent</span>
+                ) : null}
+                {snoozedUntil !== null ? (
+                  <span className="inbox-row__chip inbox-row__chip--snoozed mono">
+                    {" "}
+                    snoozed · {formatSnoozedUntil(snoozedUntil)}
+                  </span>
                 ) : null}
               </div>
             </div>

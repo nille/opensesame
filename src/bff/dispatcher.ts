@@ -41,6 +41,7 @@ import {
   parseReplyToEmailInput,
   parseSearchEmailInput,
   parseSendEmailInput,
+  parseSnoozeThreadInput,
   parseStarThreadInput,
   type ParseError,
   type SendEmailInput,
@@ -109,6 +110,8 @@ export async function dispatch(
       return handleListThreadMessages(deps, body);
     case "star_thread":
       return handleStarThread(deps, body);
+    case "snooze_thread":
+      return handleSnoozeThread(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -450,6 +453,26 @@ async function handleStarThread(
 
   try {
     const result = await deps.reader.starThread(parsed.value, new Date());
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0029 (slice 8.11). Same status-code shape as star_thread — empty
+// thread is a 200 no-op rather than 404. The schema enforces the
+// "snoozed_until must be in the future" guard, threading `now` through
+// so dispatch and parse share one clock.
+async function handleSnoozeThread(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const now = new Date();
+  const parsed = parseSnoozeThreadInput(body, now);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  try {
+    const result = await deps.reader.snoozeThread(parsed.value, now);
     return ok(result);
   } catch (err) {
     return internalError(err);

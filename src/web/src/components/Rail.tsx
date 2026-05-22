@@ -2,7 +2,7 @@ import type { ChangeEvent, JSX, KeyboardEvent, Ref } from "react";
 import type { Theme } from "../hooks/useTheme.ts";
 import { formatPolledAt } from "../lib/format.ts";
 
-export type RailView = "inbox" | "sent" | "starred";
+export type RailView = "inbox" | "sent" | "starred" | "snoozed";
 
 interface RailProps {
   mailbox: string;
@@ -19,6 +19,9 @@ interface RailProps {
   // currently-loaded inbox window. Hidden when zero — the entry is a
   // recall affordance, not a feature advert.
   starredCount: number;
+  // ADR-0029 (slice 8.11): count of threads currently snoozed (every row
+  // unexpired). Hidden when zero — same reasoning as starredCount.
+  snoozedCount: number;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchInputRef?: Ref<HTMLInputElement>;
@@ -43,6 +46,7 @@ export function Rail({
   inboxCount,
   sentCount,
   starredCount,
+  snoozedCount,
   searchQuery,
   onSearchChange,
   searchInputRef,
@@ -57,7 +61,9 @@ export function Rail({
       ? "~/inbox"
       : view === "starred"
         ? "~/starred"
-        : "~/sent";
+        : view === "snoozed"
+          ? "~/snoozed"
+          : "~/sent";
   return (
     <aside className="rail">
       <div className="rail__head">
@@ -146,6 +152,19 @@ export function Rail({
           <span>starred</span>
           <span className="mono faint">
             {starredCount === 0 ? "—" : starredCount}
+          </span>
+        </button>
+        <button
+          type="button"
+          className={
+            "rail__navitem" +
+            (view === "snoozed" ? " rail__navitem--active" : "")
+          }
+          onClick={() => onChangeView("snoozed")}
+        >
+          <span>snoozed</span>
+          <span className="mono faint">
+            {snoozedCount === 0 ? "—" : snoozedCount}
           </span>
         </button>
         <button

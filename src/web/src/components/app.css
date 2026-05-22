@@ -1086,3 +1086,183 @@
 .star--header:hover:not(.star--disabled) {
   background: var(--paper-2);
 }
+
+/* ============================================================
+   SNOOZE (slice 8.11, ADR-0029)
+   ============================================================ */
+
+/*
+ * Snooze parallels star — same gutter / header variants, same pending /
+ * disabled handling — and adds a popover anchored under the button. The
+ * picker uses --paper-2 with a single rule for the unsnooze divider; no
+ * shadow gradient or backdrop-blur. Calm, dense, operator-grade.
+ */
+
+.snooze-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.snooze {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-faint);
+  opacity: 0;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    opacity var(--d-fast) var(--ease-out);
+}
+
+.snooze:hover:not(.snooze--disabled) {
+  color: var(--ink);
+}
+
+.snooze--on {
+  color: var(--accent);
+  opacity: 1;
+}
+
+.snooze--on:hover:not(.snooze--disabled) {
+  color: var(--accent);
+  filter: brightness(1.05);
+}
+
+.snooze--pending {
+  opacity: 0.65;
+}
+
+.snooze--disabled {
+  cursor: not-allowed;
+  color: var(--ink-faint);
+  opacity: 0.4;
+}
+
+/* Open state keeps the icon visible while the picker is up so the operator
+   can see what they're addressing. */
+.snooze--open {
+  opacity: 1;
+  color: var(--ink);
+}
+
+.snooze--gutter {
+  width: 14px;
+  height: 14px;
+  margin-top: 4px;
+}
+.inbox-row:hover .snooze--gutter,
+.inbox-row .snooze--gutter.snooze--on,
+.inbox-row .snooze--gutter.snooze--pending,
+.inbox-row .snooze--gutter.snooze--open {
+  opacity: 1;
+}
+.inbox-row .snooze--gutter.snooze--disabled {
+  opacity: 0;
+}
+.inbox-row:hover .snooze--gutter.snooze--disabled {
+  opacity: 0.25;
+}
+
+.snooze--header {
+  opacity: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+}
+.snooze--header:hover:not(.snooze--disabled) {
+  background: var(--paper-2);
+}
+
+/* Picker popover — anchored beneath the button, right-aligned in the
+   gutter (so it doesn't push past the inbox-row's right edge) and
+   right-aligned in the header (so it doesn't bleed past the reader's
+   right padding). Width is fixed so the right column of hint timestamps
+   line up across rows. */
+.snooze-picker {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + var(--r-1));
+  min-width: 220px;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  padding: var(--r-1) 0;
+  display: flex;
+  flex-direction: column;
+  font-size: var(--t-sm);
+  color: var(--ink);
+  box-shadow: 0 8px 24px -12px oklch(20% 0.02 80 / 0.35);
+  animation: snooze-picker-rise var(--d-fast) var(--ease-out);
+}
+@keyframes snooze-picker-rise {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.snooze-picker--gutter {
+  /* Anchor near the gutter button without overflowing the row's left edge.
+     The gutter is narrow, so the picker drops to the right of the icon. */
+  left: 0;
+}
+
+.snooze-picker--header {
+  /* Reader sits in a wider column; right-align the picker under the
+     header button so it stays inside the reader's gutters. */
+  right: 0;
+}
+
+.snooze-picker__head {
+  padding: var(--r-1) var(--r-3) var(--r-1);
+  font-size: var(--t-mono-xs);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.snooze-picker__item {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--r-3);
+  padding: var(--r-2) var(--r-3);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  color: var(--ink);
+  font: inherit;
+  transition: background-color var(--d-fast) var(--ease-out);
+}
+.snooze-picker__item:hover,
+.snooze-picker__item:focus-visible {
+  background: var(--paper-2);
+  outline: none;
+}
+
+.snooze-picker__label {
+  font-size: var(--t-sm);
+}
+
+.snooze-picker__hint {
+  font-size: var(--t-mono-sm);
+}
+
+.snooze-picker__rule {
+  height: 1px;
+  background: var(--rule);
+  margin: var(--r-1) 0;
+}
+
+.snooze-picker__item--unsnooze .snooze-picker__label {
+  color: var(--ink-muted);
+}
+
+/* Snoozed-until chip on the inbox row meta strip — uses the accent-soft
+   tint to read as a state cue rather than a generic chip. */
+.inbox-row__chip--snoozed {
+  border-color: var(--accent-soft);
+  color: var(--accent);
+}

@@ -15,8 +15,10 @@ import {
   formatRowTimestamp,
   senderDisplay,
 } from "../lib/format.ts";
+import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
 import { useKeyboard } from "../hooks/useKeyboard.ts";
 import { StarButton } from "./Star.tsx";
+import { SnoozeButton } from "./Snooze.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -37,6 +39,16 @@ interface ReaderProps {
   starFilled: boolean;
   starPending: boolean;
   onToggleStar: (rootKey: string, next: boolean) => void;
+  // Slice 8.11. Same shape as the star pair, but the indicator carries the
+  // earliest unexpired wake-time (or null when not snoozed) and the toggle
+  // commits a preset's wake-time / null.
+  snoozedUntil: string | null;
+  snoozePending: boolean;
+  onPickSnooze: (rootKey: string, snoozedUntil: string | null) => void;
+  // App routes the global `z` shortcut to this prop so the picker opens
+  // alongside the visible reader-header button.
+  snoozePickerOpen: boolean;
+  onSnoozePickerOpenChange: (open: boolean) => void;
 }
 
 // Slice 8.6: the reader pane renders the whole conversation. Subject sits at
@@ -57,6 +69,11 @@ export function Reader({
   starFilled,
   starPending,
   onToggleStar,
+  snoozedUntil,
+  snoozePending,
+  onPickSnooze,
+  snoozePickerOpen,
+  onSnoozePickerOpenChange,
 }: ReaderProps): JSX.Element {
   if (thread === null) {
     return (
@@ -96,6 +113,11 @@ export function Reader({
       starFilled={starFilled}
       starPending={starPending}
       onToggleStar={onToggleStar}
+      snoozedUntil={snoozedUntil}
+      snoozePending={snoozePending}
+      onPickSnooze={onPickSnooze}
+      snoozePickerOpen={snoozePickerOpen}
+      onSnoozePickerOpenChange={onSnoozePickerOpenChange}
     />
   );
 }
@@ -109,6 +131,11 @@ interface ThreadReaderProps {
   starFilled: boolean;
   starPending: boolean;
   onToggleStar: (rootKey: string, next: boolean) => void;
+  snoozedUntil: string | null;
+  snoozePending: boolean;
+  onPickSnooze: (rootKey: string, snoozedUntil: string | null) => void;
+  snoozePickerOpen: boolean;
+  onSnoozePickerOpenChange: (open: boolean) => void;
 }
 
 function ThreadReader({
@@ -120,6 +147,11 @@ function ThreadReader({
   starFilled,
   starPending,
   onToggleStar,
+  snoozedUntil,
+  snoozePending,
+  onPickSnooze,
+  snoozePickerOpen,
+  onSnoozePickerOpenChange,
 }: ThreadReaderProps): JSX.Element {
   // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
   // (rootKey starts with "<"), fetch the full thread via list_thread_messages
@@ -201,9 +233,9 @@ function ThreadReader({
     keyboardEnabled,
   );
 
-  // The header star matches the gutter affordance — App resolves
+  // The header star + snooze match the gutter affordances — App resolves
   // filled/pending. Disabled for legacy threads (no server thread_id).
-  const starrable = thread.rootKey.startsWith("<");
+  const threadable = thread.rootKey.startsWith("<");
 
   return (
     <section className="reader">
@@ -213,10 +245,20 @@ function ThreadReader({
           <StarButton
             filled={starFilled}
             pending={starPending}
-            disabled={!starrable}
+            disabled={!threadable}
             variant="header"
             size={18}
             onToggle={(next) => onToggleStar(thread.rootKey, next)}
+          />
+          <SnoozeButton
+            snoozedUntil={snoozedUntil}
+            pending={snoozePending}
+            disabled={!threadable}
+            variant="header"
+            size={18}
+            onPickPreset={(next) => onPickSnooze(thread.rootKey, next)}
+            controlledOpen={snoozePickerOpen}
+            onOpenChange={onSnoozePickerOpenChange}
           />
         </div>
         <div className="reader__threadmeta mono faint">
@@ -225,6 +267,9 @@ function ThreadReader({
             ? "message"
             : "messages"}
           {thread.hasOutbound ? " · sent" : ""}
+          {snoozedUntil !== null
+            ? " · snoozed until " + formatSnoozedUntil(snoozedUntil)
+            : ""}
         </div>
       </header>
       <div className="reader__stack">

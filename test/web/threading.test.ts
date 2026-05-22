@@ -3,6 +3,8 @@ import {
   groupIntoThreads,
   mergeThreadRows,
 } from "../../src/web/src/lib/threading.js";
+// Pin a fixed `now` so snooze-aggregation tests are deterministic across
+// CI runs — the predicate is `every parsed row's snoozed_until > now`.
 import type {
   InboxRow,
   InboxRowFailed,
@@ -41,6 +43,7 @@ function row(
     read_at: "2026-05-21T00:00:00.000Z",
     thread_id: null,
     starred_at: null,
+    snoozed_until: null,
     ...partial,
   };
 }
@@ -582,6 +585,158 @@ describe("groupIntoThreads", () => {
       ];
       const out = groupIntoThreads(rows);
       expect(out[0]!.starred).toBe(true);
+    });
+  });
+
+  // ADR-0029 (slice 8.11). Thread.snoozed is per-row AND of unexpired
+  // snoozed_until — the wake-on-reply semantics fall out for free, since
+  // a fresh inbound row arrives with snoozed_until=null. A thread of
+  // skeletons-only is not snoozable.
+  describe("Thread.snoozed aggregation (ADR-0029 / slice 8.11)", () => {
+    const NOW = new Date("2026-05-22T10:00:00.000Z");
+    const FUTURE_EARLY = "2026-05-22T18:00:00.000Z";
+    const FUTURE_LATE = "2026-05-23T09:00:00.000Z";
+    const PAST = "2026-05-22T09:00:00.000Z";
+
+    it("returns false when no row carries snoozed_until", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+      expect(out[0]!.snoozedUntil).toBeNull();
+    });
+
+    it("returns true when every row carries an unexpired snoozed_until — earliest wake wins", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          snoozed_until: FUTURE_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          snoozed_until: FUTURE_EARLY,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(true);
+      expect(out[0]!.snoozedUntil).toBe(FUTURE_EARLY);
+    });
+
+    it("wake-on-reply: a single unstamped row wakes the conversation", () => {
+      // Two rows snoozed; a fresh inbound reply lands with snoozed_until
+      // null (the snooze fan-out happened before this row existed). The
+      // thread must read as awake even though the older rows are still
+      // stamped.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          snoozed_until: FUTURE_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          snoozed_until: FUTURE_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000C",
+          received_at: "2026-05-22T09:30:00.000Z",
+          message_id: "<r2@example.com>",
+          references: "<root@example.com>",
+          snoozed_until: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+      expect(out[0]!.snoozedUntil).toBeNull();
+    });
+
+    it("an expired snooze on any row counts as awake (already-fired wake)", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          snoozed_until: PAST,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          snoozed_until: FUTURE_LATE,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+      expect(out[0]!.snoozedUntil).toBeNull();
+    });
+
+    it("an unparseable snoozed_until is treated as awake — corrupt row can't pin the thread", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          snoozed_until: "not a date",
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          snoozed_until: FUTURE_LATE,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+    });
+
+    it("an outbound row with snoozed_until=null also wakes the thread (operator replied)", () => {
+      // The operator can reply to a snoozed thread. The send path produces
+      // a fresh row with no snoozed_until — same wake-on-reply rule applies.
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          direction: "in",
+          snoozed_until: FUTURE_LATE,
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<myreply@example.com>",
+          references: "<root@example.com>",
+          direction: "out",
+          snoozed_until: null,
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+      expect(out[0]!.hasOutbound).toBe(true);
+    });
+
+    it("a parse-failed singleton thread reads as not snoozed (skeleton can't be snoozed)", () => {
+      const rows: InboxRow[] = [
+        failed("01H0000000000000000000A", "2026-05-20T10:00:00.000Z"),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.snoozed).toBe(false);
+      expect(out[0]!.snoozedUntil).toBeNull();
     });
   });
 });

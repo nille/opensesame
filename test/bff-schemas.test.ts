@@ -4,6 +4,7 @@ import {
   parseReadInboxInput,
   parseSearchEmailInput,
   parseSendEmailInput,
+  parseSnoozeThreadInput,
   parseStarThreadInput,
 } from "../src/bff/schemas.js";
 
@@ -323,5 +324,123 @@ describe("parseStarThreadInput (ADR-0028)", () => {
     expect(parseStarThreadInput(null).ok).toBe(false);
     expect(parseStarThreadInput([]).ok).toBe(false);
     expect(parseStarThreadInput("hello").ok).toBe(false);
+  });
+});
+
+describe("parseSnoozeThreadInput (ADR-0029)", () => {
+  // Pin a fixed `now` so past-time validation is deterministic. Wake times
+  // older than this instant must be rejected; newer ones must pass.
+  const NOW = new Date("2026-05-22T10:00:00.000Z");
+  const FUTURE = "2026-05-23T09:00:00.000Z";
+  const PAST = "2026-05-21T09:00:00.000Z";
+
+  it("accepts a valid {thread_id, snoozed_until: <future iso>} body", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "<root@example.com>", snoozed_until: FUTURE },
+      NOW,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({
+        thread_id: "<root@example.com>",
+        snoozed_until: FUTURE,
+      });
+    }
+  });
+
+  it("accepts {snoozed_until: null} for unsnoozing", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "<root@example.com>", snoozed_until: null },
+      NOW,
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.snoozed_until).toBeNull();
+  });
+
+  it("rejects a missing thread_id", () => {
+    const r = parseSnoozeThreadInput({ snoozed_until: FUTURE }, NOW);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty thread_id", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "", snoozed_until: FUTURE },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("thread_id");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a missing snoozed_until field", () => {
+    const r = parseSnoozeThreadInput({ thread_id: "<root@example.com>" }, NOW);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("snoozed_until");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects a non-string non-null snoozed_until", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "<root@example.com>", snoozed_until: 1234 },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("snoozed_until");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects an unparseable snoozed_until ISO string", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "<root@example.com>", snoozed_until: "not a date" },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("snoozed_until");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a snoozed_until in the past — typo'd wake time should 400, not silently no-op", () => {
+    const r = parseSnoozeThreadInput(
+      { thread_id: "<root@example.com>", snoozed_until: PAST },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("snoozed_until");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a snoozed_until equal to now (boundary — must be strictly future)", () => {
+    const r = parseSnoozeThreadInput(
+      {
+        thread_id: "<root@example.com>",
+        snoozed_until: NOW.toISOString(),
+      },
+      NOW,
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("snoozed_until");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseSnoozeThreadInput(null, NOW).ok).toBe(false);
+    expect(parseSnoozeThreadInput([], NOW).ok).toBe(false);
+    expect(parseSnoozeThreadInput("hello", NOW).ok).toBe(false);
   });
 });
