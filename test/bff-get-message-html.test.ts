@@ -162,25 +162,63 @@ describe("get_message body_html re-parse (ADR-0042)", () => {
     expect((r.body as { body_html: string | null }).body_html).toBeNull();
   });
 
-  it("returns body_html: null when the raw fetch throws (network failure)", async () => {
+  it("returns body_html: null and logs a structured warning when the raw fetch throws", async () => {
+    // Spec ("Failure modes" in ADR-0042) requires that S3 fetch errors
+    // and parser throws emit a structured warning so the fallback to
+    // text/plain is observable. The warning carries the raw_s3_uri and
+    // the error class+message — never body content.
     const stored = makeStored();
     const rawReader: RawMessageReader = {
       getRaw: vi.fn(async () => {
         throw new Error("S3 timeout");
       }),
     };
+    const warn = vi.fn();
     const deps = makeDeps({
       reader: {
         ...makeDeps().reader,
         getByMessageId: vi.fn(async () => stored),
       },
       rawReader,
+      logger: { warn },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
       message_id: "<msg-1@example.com>",
     });
     expect(r.status).toBe(200);
     expect((r.body as { body_html: string | null }).body_html).toBeNull();
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [msg, fields] = warn.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+    ];
+    expect(msg).toMatch(/rehydrate/i);
+    expect(fields).toMatchObject({
+      raw_s3_uri: stored.raw_s3_uri,
+      error_class: "Error",
+      error_message: "S3 timeout",
+    });
+  });
+
+  it("does not log a warning when the raw fetch succeeds (happy path stays quiet)", async () => {
+    const stored = makeStored();
+    const rawReader: RawMessageReader = {
+      getRaw: vi.fn(async () => makeMultipartAlternative()),
+    };
+    const warn = vi.fn();
+    const deps = makeDeps({
+      reader: {
+        ...makeDeps().reader,
+        getByMessageId: vi.fn(async () => stored),
+      },
+      rawReader,
+      logger: { warn },
+    });
+    const r = await dispatch(deps, "/rpc/get_message", {
+      message_id: "<msg-1@example.com>",
+    });
+    expect(r.status).toBe(200);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("returns body_html: null when the message has only a text/plain part", async () => {

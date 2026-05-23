@@ -77,6 +77,14 @@ export type SendEmailResult = {
   sent_at: string;
 };
 
+export type BffLogger = {
+  warn(message: string, fields?: Record<string, unknown>): void;
+};
+
+const defaultBffLogger: BffLogger = {
+  warn: (m, f) => console.warn(m, f ?? {}),
+};
+
 export type BffDeps = {
   reader: MessageReader;
   sendEmail: (input: SendEmailInput) => Promise<SendEmailResult>;
@@ -90,6 +98,10 @@ export type BffDeps = {
   // re-parses the raw MIME from S3 and fills body_html on the response. When
   // absent (tests, CLI drivers), get_message returns body_html: null.
   rawReader?: RawMessageReader;
+  // Best-effort structured logger for non-fatal failures (e.g. raw-MIME
+  // re-parse errors per ADR-0042). Defaults to console so production
+  // operators still see the warning even if the host forgets to wire one.
+  logger?: BffLogger;
 };
 
 // 60s is enough for the browser to follow the redirect immediately. Short
@@ -231,6 +243,12 @@ async function handleGetMessage(
 // failure path (no raw reader configured, missing S3 object, parser
 // throws, no html part in the message). The dispatcher never propagates
 // these failures: the text/plain render is the always-correct fallback.
+//
+// Failures are observable: the spec ("Failure modes") requires that S3
+// fetch errors and parser throws emit a structured warning so the
+// operator can tell a silent fallback from a degraded one. The log line
+// carries `raw_s3_uri`, the error class and message — never body
+// content, since that would leak PII into the log stream.
 async function tryRehydrateHtml(
   deps: BffDeps,
   rawS3Uri: string,
@@ -241,7 +259,13 @@ async function tryRehydrateHtml(
     if (raw === null) return null;
     const parsed = parseMime(raw);
     return parsed.bodyHtml;
-  } catch {
+  } catch (err) {
+    const logger = deps.logger ?? defaultBffLogger;
+    logger.warn("get_message: rich-text rehydrate failed, falling back to text", {
+      raw_s3_uri: rawS3Uri,
+      error_class: err instanceof Error ? err.constructor.name : typeof err,
+      error_message: err instanceof Error ? err.message : String(err),
+    });
     return null;
   }
 }
