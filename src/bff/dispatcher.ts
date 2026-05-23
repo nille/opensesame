@@ -26,21 +26,41 @@ import {
   ReplyParentUnrepliable,
 } from "../core/reply-to-email.js";
 import type {
+  AddThreadLabelInput as ReaderAddThreadLabelInput,
+  CreateLabelInput as ReaderCreateLabelInput,
+  DeleteDraftInput as ReaderDeleteDraftInput,
+  DeleteLabelInput as ReaderDeleteLabelInput,
+  GetDraftInput as ReaderGetDraftInput,
+  ListDraftsInput as ReaderListDraftsInput,
   ListInboxInput,
+  ListLabelsInput as ReaderListLabelsInput,
   ListThreadMessagesInput as ReaderListThreadMessagesInput,
   MessageReader,
+  RemoveThreadLabelInput as ReaderRemoveThreadLabelInput,
+  RenameLabelInput as ReaderRenameLabelInput,
+  SaveDraftInput as ReaderSaveDraftInput,
   SearchEmailInput as ReaderSearchEmailInput,
 } from "../core/store.js";
 import { SuppressionBlockError } from "../core/suppression.js";
 import {
+  parseAddThreadLabelInput,
   parseArchiveThreadInput,
+  parseCreateLabelInput,
+  parseDeleteDraftInput,
+  parseDeleteLabelInput,
   parseGetAttachmentInput,
+  parseGetDraftInput,
   parseGetMessageInput,
+  parseListDraftsInput,
+  parseListLabelsInput,
   parseListThreadMessagesInput,
   parseMarkReadInput,
   parseMarkThreadReadInput,
   parseReadInboxInput,
+  parseRemoveThreadLabelInput,
+  parseRenameLabelInput,
   parseReplyToEmailInput,
+  parseSaveDraftInput,
   parseSearchEmailInput,
   parseSendEmailInput,
   parseSnoozeThreadInput,
@@ -81,6 +101,10 @@ const DEFAULT_INBOX_LIMIT = 50;
 // runaway. ADR-0027 calls out 200 as the upper bound.
 const DEFAULT_THREAD_LIMIT = 50;
 const MAX_THREAD_LIMIT = 200;
+// ADR-0035: drafts list page size. Cap matches DEFAULT_INBOX_LIMIT — the
+// composer rarely needs more than a screenful at once.
+const DEFAULT_DRAFTS_LIMIT = 50;
+const MAX_DRAFTS_LIMIT = 200;
 
 const RPC_PREFIX = "/rpc/";
 
@@ -121,6 +145,26 @@ export async function dispatch(
       return handleMarkThreadRead(deps, body);
     case "archive_thread":
       return handleArchiveThread(deps, body);
+    case "save_draft":
+      return handleSaveDraft(deps, body);
+    case "list_drafts":
+      return handleListDrafts(deps, body);
+    case "get_draft":
+      return handleGetDraft(deps, body);
+    case "delete_draft":
+      return handleDeleteDraft(deps, body);
+    case "add_thread_label":
+      return handleAddThreadLabel(deps, body);
+    case "remove_thread_label":
+      return handleRemoveThreadLabel(deps, body);
+    case "list_labels":
+      return handleListLabels(deps, body);
+    case "create_label":
+      return handleCreateLabel(deps, body);
+    case "delete_label":
+      return handleDeleteLabel(deps, body);
+    case "rename_label":
+      return handleRenameLabel(deps, body);
     default:
       return notFound("tool_not_found", `unknown tool: ${tool}`);
   }
@@ -309,6 +353,7 @@ async function handleSearchEmail(
   const input: ReaderSearchEmailInput = {
     address: parsed.value.address,
     query: parsed.value.query,
+    ast: parsed.value.ast,
     limit: parsed.value.limit ?? DEFAULT_INBOX_LIMIT,
     cursor: parsed.value.cursor ?? null,
     since: parsed.value.since ?? null,
@@ -540,6 +585,271 @@ async function handleArchiveThread(
   }
 }
 
+// ADR-0035 (slice 8.17). Drafts: parallel data plane in the Messages
+// table. save / list / get / delete map to 200 / 400 / 404 / 500 — no 409
+// (no suppression posture), no 422 (no parent-required guard).
+
+async function handleSaveDraft(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseSaveDraftInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  // Build the reader-shaped input — keep absent optional fields absent so
+  // the reader can distinguish "don't touch" from "explicit null".
+  const wire = parsed.value;
+  const input: ReaderSaveDraftInput = {
+    address: wire.address,
+    draft_id: wire.draft_id,
+    body_text: wire.body_text,
+  };
+  for (const f of [
+    "to",
+    "cc",
+    "subject",
+    "in_reply_to",
+    "references",
+  ] as const) {
+    if (f in wire) {
+      const v = wire[f];
+      if (v !== undefined) input[f] = v;
+    }
+  }
+
+  try {
+    const result = await deps.reader.saveDraft(input, new Date());
+    if (result === null) {
+      return {
+        status: 404,
+        body: {
+          code: "draft_not_found",
+          message: `no draft ${wire.draft_id} for ${wire.address}`,
+        },
+      };
+    }
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleListDrafts(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseListDraftsInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const requested = parsed.value.limit ?? DEFAULT_DRAFTS_LIMIT;
+  const input: ReaderListDraftsInput = {
+    address: parsed.value.address,
+    limit: Math.min(requested, MAX_DRAFTS_LIMIT),
+    cursor: parsed.value.cursor ?? null,
+  };
+
+  try {
+    const result = await deps.reader.listDrafts(input);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleGetDraft(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseGetDraftInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderGetDraftInput = {
+    address: parsed.value.address,
+    draft_id: parsed.value.draft_id,
+  };
+
+  try {
+    const result = await deps.reader.getDraft(input);
+    if (result === null) {
+      return {
+        status: 404,
+        body: {
+          code: "draft_not_found",
+          message: `no draft ${input.draft_id} for ${input.address}`,
+        },
+      };
+    }
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleDeleteDraft(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseDeleteDraftInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderDeleteDraftInput = {
+    address: parsed.value.address,
+    draft_id: parsed.value.draft_id,
+  };
+
+  try {
+    const result = await deps.reader.deleteDraft(input);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0037 (slice 8.17). Operator-defined labels.
+//
+// add_thread_label / remove_thread_label fan out across ThreadIdGSI; empty
+// thread is a 200 no-op (updated_count: 0), mirroring star_thread's posture.
+// list_labels is one Query against the catalog SK prefix. create_label /
+// rename_label return null on conflict → 409 already_exists; delete_label
+// is idempotent against a missing catalog entry — the bulk strip across
+// rows runs regardless of whether the catalog row was there.
+
+async function handleAddThreadLabel(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseAddThreadLabelInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderAddThreadLabelInput = {
+    thread_id: parsed.value.thread_id,
+    label: parsed.value.label,
+  };
+
+  try {
+    const result = await deps.reader.addThreadLabel(input, new Date());
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleRemoveThreadLabel(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseRemoveThreadLabelInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderRemoveThreadLabelInput = {
+    thread_id: parsed.value.thread_id,
+    label: parsed.value.label,
+  };
+
+  try {
+    const result = await deps.reader.removeThreadLabel(input, new Date());
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleListLabels(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseListLabelsInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderListLabelsInput = { address: parsed.value.address };
+
+  try {
+    const result = await deps.reader.listLabels(input);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleCreateLabel(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseCreateLabelInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderCreateLabelInput = {
+    address: parsed.value.address,
+    label: parsed.value.label,
+  };
+
+  try {
+    const result = await deps.reader.createLabel(input, new Date());
+    if (result === null) {
+      return {
+        status: 409,
+        body: {
+          code: "already_exists",
+          message: `label ${input.label} already exists for ${input.address}`,
+        },
+      };
+    }
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleDeleteLabel(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseDeleteLabelInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderDeleteLabelInput = {
+    address: parsed.value.address,
+    label: parsed.value.label,
+  };
+
+  try {
+    const result = await deps.reader.deleteLabel(input);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+async function handleRenameLabel(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseRenameLabelInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  const input: ReaderRenameLabelInput = {
+    address: parsed.value.address,
+    from: parsed.value.from,
+    to: parsed.value.to,
+  };
+
+  try {
+    const result = await deps.reader.renameLabel(input, new Date());
+    if (result === null) {
+      return {
+        status: 409,
+        body: {
+          code: "already_exists",
+          message: `label ${input.to} already exists for ${input.address}`,
+        },
+      };
+    }
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
 function ok(value: unknown): DispatchResult {
   return { status: 200, body: value };
 }
@@ -549,15 +859,17 @@ function notFound(code: string, message: string): DispatchResult {
 }
 
 function invalidRequest(error: ParseError): DispatchResult {
-  return {
-    status: 400,
-    body: {
-      code: "invalid_request",
-      field: error.field,
-      reason: error.code,
-      message: error.message,
-    },
+  const body: Record<string, unknown> = {
+    code: "invalid_request",
+    field: error.field,
+    reason: error.code,
+    message: error.message,
   };
+  // ADR-0036: search-operator parse errors carry an optional byte offset
+  // so the web client can underline the bad token. Reserved on the wire
+  // even though slice 8.17's UI only renders the message.
+  if (error.position !== undefined) body.position = error.position;
+  return { status: 400, body };
 }
 
 // Never echoes the underlying error message — could carry DDB conditional

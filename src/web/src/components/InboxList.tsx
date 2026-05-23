@@ -11,6 +11,7 @@ import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
 import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
+import { LabelChips } from "./LabelChips.tsx";
 
 interface InboxListProps {
   threads: Thread[];
@@ -60,6 +61,14 @@ interface InboxListProps {
   // clicks on a row toggle membership instead of opening the reader.
   // Esc / clear-selection exits the mode and restores click-to-read.
   selectionActive: boolean;
+  // Slice 8.17 (ADR-0037). Pending-label deltas per thread. The list
+  // overlays them on `thread.labels` to compute the chip set so
+  // freshly-toggled labels appear / disappear before the next inbox
+  // poll lands.
+  pendingLabels: Map<string, { add: Set<string>; remove: Set<string> }>;
+  // Lowercased canonical label → operator's chosen casing. The chip
+  // falls back to the lowercased key when the catalog hasn't loaded yet.
+  labelDisplayNames: Map<string, string>;
 }
 
 // Triage-fast inbox: one row per conversation (slice 8.5, ADR-0023). The
@@ -87,6 +96,8 @@ export function InboxList({
   onToggleSelection,
   onToggleSelectAll,
   selectionActive,
+  pendingLabels,
+  labelDisplayNames,
 }: InboxListProps): JSX.Element {
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -202,6 +213,22 @@ export function InboxList({
         // Slice 8.14. Bulk-select membership; subject-fallback rollups
         // are gated out (same as the annotation buttons).
         const checked = selection.has(thread.rootKey);
+        // Slice 8.17 (ADR-0037). Overlay pending-label deltas on the
+        // thread's server-aggregated labels so the chip strip flickers
+        // in real time as the operator toggles. Identity is the
+        // lowercased canonical key throughout.
+        const labelDelta = pendingLabels.get(thread.rootKey);
+        const effectiveLabels =
+          labelDelta === undefined
+            ? thread.labels
+            : Array.from(
+                (() => {
+                  const s = new Set<string>(thread.labels);
+                  for (const l of labelDelta.add) s.add(l);
+                  for (const l of labelDelta.remove) s.delete(l);
+                  return s;
+                })(),
+              ).sort((a, b) => a.localeCompare(b));
 
         return (
           <div
@@ -325,6 +352,11 @@ export function InboxList({
                     archived
                   </span>
                 ) : null}
+                <LabelChips
+                  labels={effectiveLabels}
+                  displayNames={labelDisplayNames}
+                  variant="row"
+                />
               </div>
             </div>
           </div>

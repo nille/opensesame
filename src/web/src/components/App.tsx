@@ -11,15 +11,21 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   bff,
   type InboxRow,
+  type LabelCatalogEntry,
+  type ListDraftsResult,
+  type ListLabelsResult,
   type ReadMessage,
   type RpcResult,
+  type StoredDraft,
 } from "../lib/bff-client.ts";
 import { useTheme } from "../hooks/useTheme.ts";
 import { useKeyboard } from "../hooks/useKeyboard.ts";
 import { useDebounced } from "../hooks/useDebounced.ts";
-import { Rail } from "./Rail.tsx";
+import { Rail, type RailLabel } from "./Rail.tsx";
 import { InboxList } from "./InboxList.tsx";
+import { DraftsList } from "./DraftsList.tsx";
 import { Reader } from "./Reader.tsx";
+import { LabelPicker, type LabelPresence } from "./LabelPicker.tsx";
 import { groupIntoThreads, type Thread } from "../lib/threading.ts";
 import {
   Composer,
@@ -43,9 +49,31 @@ type PaneState =
       // message_id and passes it through to bff.replyToEmail; the server
       // re-loads the parent and remains authoritative for threading.
       replyParentId: string | null;
+      // ADR-0035 (slice 8.17). Set when the operator clicks a draft row
+      // in the drafts view — pre-loads the composer fields and stamps
+      // the existing draft_id as the upsert handle for auto-saves.
+      resumeDraft: StoredDraft | null;
     };
 
-type View = "inbox" | "sent" | "starred" | "snoozed" | "trashed" | "archived";
+type View =
+  | "inbox"
+  | "sent"
+  | "starred"
+  | "snoozed"
+  | "trashed"
+  | "archived"
+  | "drafts"
+  // ADR-0037 (slice 8.17). Label-scoped view. The label key is the
+  // canonical lowercased form (catalog identity); rail / title use the
+  // catalog's display_name when rendering.
+  | { kind: "label"; label: string };
+
+// View identity used by selection-clear effects. Object views collapse
+// to their kind tag; primitive views stay as-is so existing useEffects
+// keyed on `view` keep working.
+function viewKey(v: View): string {
+  return typeof v === "string" ? v : `label:${v.label}`;
+}
 
 export function App(): JSX.Element {
   const { theme, toggle } = useTheme();
@@ -53,6 +81,11 @@ export function App(): JSX.Element {
   const [view, setView] = useState<View>("inbox");
   const [pane, setPane] = useState<PaneState>({ mode: "reader" });
   const [selectedIdx, setSelectedIdx] = useState(0);
+  // ADR-0035 (slice 8.17). Drafts have their own ordinal selection state
+  // since the drafts list is flat (StoredDraft[]) rather than threaded —
+  // sharing selectedIdx with the inbox would have the cursor jump around
+  // every time the operator switches views.
+  const [draftSelectedIdx, setDraftSelectedIdx] = useState(0);
   const [lastPolledAt, setLastPolledAt] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const debouncedQuery = useDebounced(searchQuery.trim(), 220);
@@ -92,6 +125,24 @@ export function App(): JSX.Element {
   const [pendingArchives, setPendingArchives] = useState<Map<string, boolean>>(
     () => new Map(),
   );
+  // ADR-0037 (slice 8.17). Optimistic-pending label deltas keyed by
+  // Thread.rootKey. Each entry holds two sets: labels the operator
+  // intends to add and labels they intend to remove. Mixing the two
+  // intents in one entry lets a bulk session queue several toggles per
+  // thread before the RPCs settle. Cleared per-(rootKey, label) on
+  // success; the whole thread entry is dropped when both sets are
+  // empty so isLabelPending() can short-circuit.
+  const [pendingLabels, setPendingLabels] = useState<
+    Map<string, { add: Set<string>; remove: Set<string> }>
+  >(() => new Map());
+  // Picker state. `null` means closed; otherwise a target descriptor
+  // that says which threads the picker applies to. Single-thread vs
+  // bulk is implicit in the rootKeys set's size, so the same picker
+  // component handles both.
+  const [labelPicker, setLabelPicker] = useState<{
+    rootKeys: string[];
+    anchor: "row" | "header" | "bulk";
+  } | null>(null);
   // The reader-header snooze picker is controlled so the global `z` shortcut
   // can pop it open while keeping the gutter pickers self-managed.
   const [readerSnoozePickerOpen, setReaderSnoozePickerOpen] = useState(false);
@@ -130,6 +181,67 @@ export function App(): JSX.Element {
     enabled: searchActive,
     staleTime: 30_000,
   });
+
+  // ADR-0035 (slice 8.17). Drafts query — refetched on Composer save/delete
+  // via invalidate, so the rail count and Drafts view stay current without
+  // polling. Stale-time longer than inbox: drafts mutate from one tab and
+  // we don't need cross-tab freshness right now.
+  const draftsQuery = useQuery({
+    queryKey: ["drafts", MAILBOX],
+    queryFn: (): Promise<RpcResult<ListDraftsResult>> =>
+      bff.listDrafts({ address: MAILBOX, limit: 100 }),
+    staleTime: 60_000,
+  });
+
+  const drafts = useMemo<StoredDraft[]>(() => {
+    const r = draftsQuery.data;
+    if (!r || r.kind !== "ok") return [];
+    return r.value.drafts;
+  }, [draftsQuery.data]);
+
+  const draftsCount = drafts.length;
+
+  // ADR-0037 (slice 8.17). Label catalog query. Refetched on
+  // create/delete/rename via invalidate; the rail labels section
+  // and the picker both read from it. Stale-time matches drafts —
+  // the catalog mutates rarely.
+  const labelsCatalogQuery = useQuery({
+    queryKey: ["labels", MAILBOX],
+    queryFn: (): Promise<RpcResult<ListLabelsResult>> =>
+      bff.listLabels({ address: MAILBOX }),
+    staleTime: 60_000,
+  });
+
+  const labelCatalog = useMemo<LabelCatalogEntry[]>(() => {
+    const r = labelsCatalogQuery.data;
+    if (!r || r.kind !== "ok") return [];
+    return r.value.labels;
+  }, [labelsCatalogQuery.data]);
+
+  // Lowercased canonical key → display_name. Drives the inbox-row
+  // chip casing and the rail labels section.
+  const labelDisplayNames = useMemo<Map<string, string>>(() => {
+    const m = new Map<string, string>();
+    for (const e of labelCatalog) m.set(e.label, e.display_name);
+    return m;
+  }, [labelCatalog]);
+
+  // Force a drafts re-fetch from the composer's auto-save / delete hooks.
+  // Cheap — listDrafts is one DDB query against the address partition.
+  const onDraftsChanged = useCallback((): void => {
+    void queryClient.invalidateQueries({ queryKey: ["drafts", MAILBOX] });
+  }, [queryClient]);
+
+  const deleteDraftFromList = useCallback(
+    (draftId: string): void => {
+      void bff
+        .deleteDraft({ address: MAILBOX, draft_id: draftId })
+        .then(() => {
+          void queryClient.invalidateQueries({ queryKey: ["drafts", MAILBOX] });
+        });
+    },
+    [queryClient],
+  );
 
   // Pull every message read_inbox returned. Threading runs over the full
   // set so an outbound reply can roll up under the inbound parent it
@@ -195,6 +307,22 @@ export function App(): JSX.Element {
       return t.archived;
     },
     [pendingArchives],
+  );
+
+  // ADR-0037 (slice 8.17). Apply the pending-labels delta map on top of
+  // the thread's server-aggregated `labels` so the inbox row's chips and
+  // the label-view filter both see the operator's freshly-toggled state
+  // before the next inbox poll arrives. Both sets are lowercased.
+  const effectiveLabels = useCallback(
+    (t: Thread): string[] => {
+      const delta = pendingLabels.get(t.rootKey);
+      if (delta === undefined) return t.labels;
+      const out = new Set<string>(t.labels);
+      for (const l of delta.add) out.add(l);
+      for (const l of delta.remove) out.delete(l);
+      return Array.from(out).sort((a, b) => a.localeCompare(b));
+    },
+    [pendingLabels],
   );
 
   const inboxThreads = useMemo(
@@ -277,19 +405,39 @@ export function App(): JSX.Element {
     [allThreads, isArchivedNow, isTrashedNow],
   );
 
+  // ADR-0037 (slice 8.17). Label view: every thread carrying the picked
+  // label, with trash/archive elided (matching how Inbox hides them).
+  // Pending-add deltas surface a freshly-tagged thread immediately;
+  // pending-remove deltas vanish the row from the view in real time.
+  // Snoozed threads stay visible in label views — the operator chose
+  // the classification deliberately and the label view is how they
+  // navigate to it.
+  const labelView = typeof view === "object" ? view.label : null;
+  const labelThreads = useMemo<Thread[]>(() => {
+    if (labelView === null) return [];
+    return allThreads.filter(
+      (t) =>
+        effectiveLabels(t).includes(labelView) &&
+        !isTrashedNow(t) &&
+        !isArchivedNow(t),
+    );
+  }, [allThreads, labelView, effectiveLabels, isTrashedNow, isArchivedNow]);
+
   const threads = searchActive
     ? searchThreads
-    : view === "inbox"
-      ? inboxThreads
-      : view === "starred"
-        ? starredThreads
-        : view === "snoozed"
-          ? snoozedThreads
-          : view === "trashed"
-            ? trashedThreads
-            : view === "archived"
-              ? archivedThreads
-              : sentThreads;
+    : labelView !== null
+      ? labelThreads
+      : view === "inbox"
+        ? inboxThreads
+        : view === "starred"
+          ? starredThreads
+          : view === "snoozed"
+            ? snoozedThreads
+            : view === "trashed"
+              ? trashedThreads
+              : view === "archived"
+                ? archivedThreads
+                : sentThreads;
 
   // Rail counts stay as message counts (per ADR-0023): triage volume is
   // what the operator wants to see, not conversation count.
@@ -315,6 +463,100 @@ export function App(): JSX.Element {
   const trashedThreadCount = trashedThreads.length;
   const archivedThreadCount = archivedThreads.length;
 
+  // ADR-0037 (slice 8.17). Per-label thread count for the rail labels
+  // section. Counts every thread (visible to inbox/snoozed/labeled) that
+  // carries the label in its effective set — pending-add bumps the
+  // count immediately, pending-remove drops it. Trash + archive are
+  // elided to mirror the label-view filter so the rail count and the
+  // view's row count agree.
+  const labelThreadCounts = useMemo<Map<string, number>>(() => {
+    const m = new Map<string, number>();
+    for (const t of allThreads) {
+      if (isTrashedNow(t)) continue;
+      if (isArchivedNow(t)) continue;
+      for (const l of effectiveLabels(t)) {
+        m.set(l, (m.get(l) ?? 0) + 1);
+      }
+    }
+    return m;
+  }, [allThreads, effectiveLabels, isTrashedNow, isArchivedNow]);
+
+  // Rail labels rows. The catalog drives the order (created_at desc as
+  // returned by list_labels); the rail just renders. Catalog-only entries
+  // with zero current matches still appear so the operator can navigate to
+  // empty labels — the count column shows "—" in that case.
+  const railLabels = useMemo<RailLabel[]>(
+    () =>
+      labelCatalog.map((e) => ({
+        label: e.label,
+        display_name: e.display_name,
+        count: labelThreadCounts.get(e.label) ?? 0,
+      })),
+    [labelCatalog, labelThreadCounts],
+  );
+
+  // Picker presence resolver. For a single-thread picker, this is just
+  // "does the focused thread carry the label". For a bulk picker, returns
+  // "on" iff every targeted thread carries it; "mixed" if some do and
+  // some don't; "off" otherwise. Pending deltas win, mirroring how
+  // `effectiveLabels` overlays the server view everywhere else.
+  const pickerPresenceOf = useCallback(
+    (label: string): LabelPresence => {
+      if (labelPicker === null) return "off";
+      const lower = label.toLowerCase();
+      let onCount = 0;
+      let total = 0;
+      for (const t of allThreads) {
+        if (!labelPicker.rootKeys.includes(t.rootKey)) continue;
+        total += 1;
+        if (effectiveLabels(t).includes(lower)) onCount += 1;
+      }
+      if (total === 0) return "off";
+      if (onCount === total) return "on";
+      if (onCount === 0) return "off";
+      return "mixed";
+    },
+    [labelPicker, allThreads, effectiveLabels],
+  );
+
+  // Pending-key set for the picker's row dimming. Any label whose pending
+  // delta touches *any* of the picker's targets is considered pending so a
+  // bulk operator's repeated clicks all see a "yes, that one's in flight"
+  // hint. Returns lowercased keys to match the picker's identity model.
+  const pickerPendingKeys = useMemo<Set<string>>(() => {
+    if (labelPicker === null) return new Set();
+    const out = new Set<string>();
+    for (const rootKey of labelPicker.rootKeys) {
+      const delta = pendingLabels.get(rootKey);
+      if (delta === undefined) continue;
+      for (const k of delta.add) out.add(k);
+      for (const k of delta.remove) out.add(k);
+    }
+    return out;
+  }, [labelPicker, pendingLabels]);
+
+  const onPickerToggle = useCallback(
+    (label: string, target: "on" | "off"): void => {
+      if (labelPicker === null) return;
+      for (const rootKey of labelPicker.rootKeys) {
+        toggleLabel(rootKey, label, target);
+      }
+    },
+    [labelPicker, toggleLabel],
+  );
+
+  const onPickerCreate = useCallback(
+    async (label: string): Promise<void> => {
+      if (labelPicker === null) return;
+      await createAndApplyLabel(labelPicker.rootKeys, label);
+    },
+    [labelPicker, createAndApplyLabel],
+  );
+
+  const closePicker = useCallback((): void => {
+    setLabelPicker(null);
+  }, []);
+
   // Kept around for the search-loading skeleton check.
   const messages = searchActive ? searchMessages : allMessages;
 
@@ -334,12 +576,32 @@ export function App(): JSX.Element {
       : searchMessages.length
     : null;
 
+  // ADR-0036 (slice 8.17). Surface server-side parser failures inline.
+  // The BFF returns 400 invalid_request with field=query when the operator
+  // grammar is broken (unclosed quote, unknown is:/in: value, …). We pluck
+  // the message so the rail can render it where "N hits" usually lives.
+  const searchError: string | null = (() => {
+    const r = searchQueryResult.data;
+    if (!r) return null;
+    if (r.kind !== "invalid_request") return null;
+    if (r.field !== "query") return null;
+    return r.message;
+  })();
+
   // Keep the selection in range as the inbox refreshes.
   useEffect(() => {
     if (selectedIdx >= threads.length && threads.length > 0) {
       setSelectedIdx(threads.length - 1);
     }
   }, [threads.length, selectedIdx]);
+
+  // Same posture for the drafts list — if a draft was deleted from
+  // another tab the index might point past the end.
+  useEffect(() => {
+    if (draftSelectedIdx >= drafts.length && drafts.length > 0) {
+      setDraftSelectedIdx(drafts.length - 1);
+    }
+  }, [drafts.length, draftSelectedIdx]);
 
   // Bulk-select helpers (ADR-0032, slice 8.14). Selection is purely
   // client-side state; clearing on view switch / search transition keeps it
@@ -357,8 +619,10 @@ export function App(): JSX.Element {
     (next: View) => {
       setView(next);
       setSelectedIdx(0);
+      setDraftSelectedIdx(0);
       setPane({ mode: "reader" });
       setSearchQuery("");
+      setLabelPicker(null);
       clearSelection();
     },
     [clearSelection],
@@ -371,16 +635,45 @@ export function App(): JSX.Element {
     clearSelection();
   }, [searchActive, debouncedQuery, clearSelection]);
 
+  // Stable string identity for `view` — the View type is a union of
+  // string | { kind: "label"; label }, so direct dep comparison would
+  // re-fire on every render that produces a new label-view object.
+  const viewIdentity = viewKey(view);
+
   // Close the reader's snooze picker whenever the selected thread changes
   // — leaving it open across selections produces a popover anchored to a
   // stale row and confuses the operator about which thread the picker
   // applies to.
   useEffect(() => {
     setReaderSnoozePickerOpen(false);
-  }, [selectedIdx, view, searchActive]);
+  }, [selectedIdx, viewIdentity, searchActive]);
+
+  // Same posture for the label picker — switching threads / views or
+  // entering search closes any open picker.
+  useEffect(() => {
+    setLabelPicker(null);
+  }, [selectedIdx, viewIdentity, searchActive]);
 
   const openCompose = useCallback((seed: ComposerSeed | null) => {
-    setPane({ mode: "composer", seed, replyParentId: null });
+    setPane({
+      mode: "composer",
+      seed,
+      replyParentId: null,
+      resumeDraft: null,
+    });
+  }, []);
+
+  // ADR-0035 (slice 8.17). Resume a saved draft. Loads the row into the
+  // composer and stamps the existing draft_id as the upsert handle, so
+  // subsequent auto-saves overwrite the same row instead of minting new
+  // ones.
+  const resumeDraft = useCallback((draft: StoredDraft): void => {
+    setPane({
+      mode: "composer",
+      seed: null,
+      replyParentId: null,
+      resumeDraft: draft,
+    });
   }, []);
 
   const onSent = useCallback(() => {
@@ -399,6 +692,7 @@ export function App(): JSX.Element {
       mode: "composer",
       seed: null,
       replyParentId: row.message_id,
+      resumeDraft: null,
     });
   }, [selectedRow]);
 
@@ -407,7 +701,12 @@ export function App(): JSX.Element {
   // latest-row reply path.
   const replyToMessage = useCallback((messageId: string): void => {
     if (messageId === "") return;
-    setPane({ mode: "composer", seed: null, replyParentId: messageId });
+    setPane({
+      mode: "composer",
+      seed: null,
+      replyParentId: messageId,
+      resumeDraft: null,
+    });
   }, []);
 
   // ADR-0028 (slice 8.10). Toggle the star on every row in the thread.
@@ -527,37 +826,75 @@ export function App(): JSX.Element {
     [queryClient],
   );
 
+  // ADR-0034 (slice 8.16). Optimistic stamp on the pendingArchives map.
+  // Split out from toggleArchive so ADR-0038's send-and-archive can
+  // pre-stamp before the reply RPC fires (the stamp lands the moment
+  // the operator commits; the archive RPC waits on send-OK).
+  const stampPendingArchive = useCallback(
+    (rootKey: string, next: boolean): void => {
+      setPendingArchives((prev) => {
+        const m = new Map(prev);
+        m.set(rootKey, next);
+        return m;
+      });
+    },
+    [],
+  );
+
+  const dropPendingArchive = useCallback((rootKey: string): void => {
+    setPendingArchives((prev) => {
+      const m = new Map(prev);
+      m.delete(rootKey);
+      return m;
+    });
+  }, []);
+
+  // ADR-0034 (slice 8.16). Fire archive_thread and reconcile the pending
+  // entry. Assumes the caller has already stamped the optimistic state.
+  // On OK, invalidate the inbox poll and drop the entry; on failure,
+  // drop the entry so the row reverts to the server-authoritative state.
+  const runArchiveRpc = useCallback(
+    (rootKey: string, next: boolean): void => {
+      void bff
+        .archiveThread({ thread_id: rootKey, archived: next })
+        .then((r) => {
+          if (r.kind !== "ok") {
+            dropPendingArchive(rootKey);
+            return;
+          }
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+          dropPendingArchive(rootKey);
+        });
+    },
+    [queryClient, dropPendingArchive],
+  );
+
   // ADR-0034 (slice 8.16). Toggle archive on every row in the thread.
   // Mirror of toggleTrash; archive is independent from trash, so the
   // pending map keys don't collide with pendingTrashes.
   const toggleArchive = useCallback(
     (rootKey: string, next: boolean): void => {
       if (!rootKey.startsWith("<")) return;
-      setPendingArchives((prev) => {
-        const m = new Map(prev);
-        m.set(rootKey, next);
-        return m;
-      });
-      void bff
-        .archiveThread({ thread_id: rootKey, archived: next })
-        .then((r) => {
-          if (r.kind !== "ok") {
-            setPendingArchives((prev) => {
-              const m = new Map(prev);
-              m.delete(rootKey);
-              return m;
-            });
-            return;
-          }
-          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
-          setPendingArchives((prev) => {
-            const m = new Map(prev);
-            m.delete(rootKey);
-            return m;
-          });
-        });
+      stampPendingArchive(rootKey, next);
+      runArchiveRpc(rootKey, next);
     },
-    [queryClient],
+    [stampPendingArchive, runArchiveRpc],
+  );
+
+  // ADR-0038 (slice 8.17). Send-and-archive callback. Composer pre-stamps
+  // pendingArchives before its reply RPC; on reply-OK it invokes this to
+  // close the composer and fire archive_thread. On reply error the
+  // composer drops the stamp via onArchiveStampDrop and the row stays in
+  // the inbox. On send-OK + archive-error the runArchiveRpc rollback
+  // already drops the entry — the row reappears, the operator presses
+  // `e` to retry archive manually (spec §Failure modes).
+  const onSentAndArchive = useCallback(
+    (threadId: string): void => {
+      setPane({ mode: "reader" });
+      void inboxQuery.refetch();
+      runArchiveRpc(threadId, true);
+    },
+    [inboxQuery, runArchiveRpc],
   );
 
   // ADR-0031 (slice 8.13). Toggle read/unread on every inbound row in the
@@ -591,6 +928,90 @@ export function App(): JSX.Element {
         });
     },
     [queryClient],
+  );
+
+  // ADR-0037 (slice 8.17). Apply or remove a label on one thread,
+  // optimistic-pending. The pending entry is a per-thread delta map:
+  // an `add` set and a `remove` set, both keyed by lowercased label.
+  // Toggle updates the right set and clears the opposite (a fresh
+  // intent supersedes the prior one). On RPC success the queue entry
+  // for that label is dropped and the next inbox poll surfaces the
+  // server-truth `labels` array; on RPC failure the same entry is
+  // dropped without invalidating, so the row falls back to whatever
+  // the last poll said.
+  const toggleLabel = useCallback(
+    (rootKey: string, label: string, target: "on" | "off"): void => {
+      if (!rootKey.startsWith("<")) return;
+      const lower = label.toLowerCase();
+      setPendingLabels((prev) => {
+        const m = new Map(prev);
+        const cur = m.get(rootKey) ?? {
+          add: new Set<string>(),
+          remove: new Set<string>(),
+        };
+        const add = new Set(cur.add);
+        const remove = new Set(cur.remove);
+        if (target === "on") {
+          add.add(lower);
+          remove.delete(lower);
+        } else {
+          remove.add(lower);
+          add.delete(lower);
+        }
+        m.set(rootKey, { add, remove });
+        return m;
+      });
+      const fire =
+        target === "on"
+          ? bff.addThreadLabel({ thread_id: rootKey, label: lower })
+          : bff.removeThreadLabel({ thread_id: rootKey, label: lower });
+      void fire.then((r) => {
+        setPendingLabels((prev) => {
+          const m = new Map(prev);
+          const cur = m.get(rootKey);
+          if (cur === undefined) return prev;
+          const add = new Set(cur.add);
+          const remove = new Set(cur.remove);
+          add.delete(lower);
+          remove.delete(lower);
+          if (add.size === 0 && remove.size === 0) {
+            m.delete(rootKey);
+          } else {
+            m.set(rootKey, { add, remove });
+          }
+          return m;
+        });
+        if (r.kind === "ok") {
+          void queryClient.invalidateQueries({ queryKey: ["inbox"] });
+        }
+      });
+    },
+    [queryClient],
+  );
+
+  // Create a new label catalog entry, then immediately apply it to a
+  // set of target threads. 409 already_exists is treated as success —
+  // a parallel session created the same name first, so we just apply
+  // the existing label across the targets. The catalog query is
+  // invalidated either way.
+  const createAndApplyLabel = useCallback(
+    async (
+      rootKeys: string[],
+      label: string,
+    ): Promise<void> => {
+      const trimmed = label.trim();
+      if (trimmed === "") return;
+      const r = await bff.createLabel({ address: MAILBOX, label: trimmed });
+      // 409 → label already exists; treat the conflict as if the
+      // operator had picked the existing row from the list.
+      if (r.kind !== "ok" && r.kind !== "conflict") return;
+      void queryClient.invalidateQueries({ queryKey: ["labels", MAILBOX] });
+      const lower = trimmed.toLowerCase();
+      for (const rootKey of rootKeys) {
+        toggleLabel(rootKey, lower, "on");
+      }
+    },
+    [queryClient, toggleLabel],
   );
 
   // ADR-0032 (slice 8.14). Toggle a thread's membership in the bulk
@@ -763,6 +1184,7 @@ export function App(): JSX.Element {
       headers: msg.headers,
       body_text: msg.body_text,
       received_at: msg.received_at,
+      thread_id: msg.thread_id,
     };
   }, [replyParentId, replyParentQuery.data]);
 
@@ -878,6 +1300,26 @@ export function App(): JSX.Element {
           const currentlyUnread =
             pending !== undefined ? !pending : t.unread;
           toggleRead(t.rootKey, currentlyUnread);
+        } else if (e.key === "l") {
+          // Slice 8.17 (ADR-0037). Open the label picker on the focused
+          // thread, or scoped to the current selection when one exists.
+          // Same gate as star/snooze/trash — server-stamped thread ids
+          // only. Selection-scoped picker filters out non-threadable
+          // rootKeys so a bulk apply never fires against a synthetic key.
+          if (selection.size > 0) {
+            const rootKeys = Array.from(selection).filter((k) =>
+              k.startsWith("<"),
+            );
+            if (rootKeys.length === 0) return;
+            e.preventDefault();
+            setLabelPicker({ rootKeys, anchor: "bulk" });
+            return;
+          }
+          const t = threads[selectedIdx];
+          if (t === undefined) return;
+          if (!t.rootKey.startsWith("<")) return;
+          e.preventDefault();
+          setLabelPicker({ rootKeys: [t.rootKey], anchor: "header" });
         } else if (e.key === "/") {
           e.preventDefault();
           searchInputRef.current?.focus();
@@ -896,12 +1338,22 @@ export function App(): JSX.Element {
               "#        trash / untrash selected thread",
               "e        archive / unarchive selected thread",
               "Shift+U  mark thread read / unread",
+              "l        label picker (enter toggles, ⌘↩ closes)",
               "x        add / remove focused thread from selection",
               "Shift+x  select / deselect all in view",
               "c        compose new",
+              "⌘↵       send (in composer)",
+              "⇧⌘↵      send reply and archive thread (in composer)",
               "t        toggle theme",
               "esc      close composer / clear search / clear selection",
               "?        this cheat sheet",
+              "",
+              "search operators (ADR-0036)",
+              "  from:bob  subject:invoice  to:alice",
+              "  is:unread | is:starred | is:snoozed",
+              "  has:attachment",
+              "  in:trash | in:archive",
+              '  "quoted phrase"  -from:noreply  (negate with leading -)',
             ].join("\n"),
           );
         } else if (e.key === "t") {
@@ -962,14 +1414,29 @@ export function App(): JSX.Element {
         snoozedCount={snoozedThreadCount}
         trashedCount={trashedThreadCount}
         archivedCount={archivedThreadCount}
+        draftsCount={draftsCount}
+        labels={railLabels}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         searchInputRef={searchInputRef}
         searching={searchActive && searchQueryResult.isFetching}
         searchHitCount={searchHitCount}
+        searchError={searchError}
         onSearchKeyDown={onSearchKeyDown}
       />
       <div className="inbox-column">
+        {view === "drafts" && !searchActive ? (
+          <DraftsList
+            drafts={drafts}
+            selectedIdx={draftSelectedIdx}
+            onSelect={setDraftSelectedIdx}
+            onResume={resumeDraft}
+            onDelete={deleteDraftFromList}
+            loading={draftsQuery.isLoading}
+            offline={draftsQuery.data?.kind === "error"}
+          />
+        ) : (
+          <>
         {selection.size > 0 ? (
           <BulkActionBar
             count={selection.size}
@@ -1025,7 +1492,11 @@ export function App(): JSX.Element {
           onToggleSelection={toggleSelection}
           onToggleSelectAll={toggleSelectAll}
           selectionActive={selection.size > 0}
+          pendingLabels={pendingLabels}
+          labelDisplayNames={labelDisplayNames}
         />
+          </>
+        )}
       </div>
       {pane.mode === "reader" ? (
         (() => {
@@ -1062,6 +1533,7 @@ export function App(): JSX.Element {
               : readPending !== undefined
                 ? !readPending
                 : t.unread;
+          const readerLabels = t === null ? [] : effectiveLabels(t);
           return (
             <Reader
               // key remounts the Reader on thread change so the in-card
@@ -1089,6 +1561,14 @@ export function App(): JSX.Element {
               unread={unread}
               readPending={readPending !== undefined}
               onToggleRead={toggleRead}
+              labels={readerLabels}
+              labelDisplayNames={labelDisplayNames}
+              onOpenLabelPicker={(rootKey) =>
+                setLabelPicker({ rootKeys: [rootKey], anchor: "header" })
+              }
+              onSelectLabel={(label) =>
+                switchView({ kind: "label", label })
+              }
             />
           );
         })()
@@ -1123,10 +1603,40 @@ export function App(): JSX.Element {
           from={MAILBOX}
           seed={pane.seed}
           parent={replyParent}
+          resumeDraft={pane.resumeDraft}
           onCancel={() => setPane({ mode: "reader" })}
           onSent={onSent}
+          onSentAndArchive={onSentAndArchive}
+          onArchiveStamp={stampPendingArchive}
+          onArchiveStampDrop={dropPendingArchive}
+          onDraftsChanged={onDraftsChanged}
         />
       )}
+      {labelPicker !== null ? (
+        <div
+          className={
+            "label-picker-overlay" +
+            (labelPicker.anchor === "bulk"
+              ? " label-picker-overlay--bulk"
+              : labelPicker.anchor === "row"
+                ? " label-picker-overlay--row"
+                : " label-picker-overlay--header")
+          }
+          // Outside-click dismissal. The picker itself stops propagation
+          // (see LabelPicker.tsx) so clicks inside the panel won't bubble
+          // here — only true outside clicks reach the overlay.
+          onMouseDown={closePicker}
+        >
+          <LabelPicker
+            catalog={labelCatalog}
+            pendingKeys={pickerPendingKeys}
+            presenceOf={pickerPresenceOf}
+            onToggle={onPickerToggle}
+            onCreate={onPickerCreate}
+            onClose={closePicker}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

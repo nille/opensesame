@@ -64,6 +64,12 @@ export interface Thread {
   // wake-on-reply behavior is identical. Independent from `trashed` —
   // a thread can be archived without being trashed and vice versa.
   archived: boolean;
+  // ADR-0037 (slice 8.17): union of every parsed row's `labels` array,
+  // deduped (case-insensitive) and sorted lexicographic case-insensitive.
+  // OR aggregation matches star — a single labelled row in an otherwise
+  // unlabelled thread keeps the thread labelled. Skeletons can't carry
+  // labels (parse never produced them), so failedRows are ignored.
+  labels: string[];
   // rows.length + failedRows.length. >1 means render the count chip.
   count: number;
 }
@@ -111,6 +117,7 @@ export function groupIntoThreads(
       snoozedUntil: null,
       trashed: false,
       archived: false,
+      labels: [],
       count: 1,
     };
     buckets.set(key, t);
@@ -126,6 +133,7 @@ export function groupIntoThreads(
     annotateSnooze(t, nowMs);
     annotateTrash(t);
     annotateArchive(t);
+    annotateLabels(t);
   }
   // Sort newest-first by the thread's most-recent message.
   threads.sort((a, b) => b.latestReceivedAt.localeCompare(a.latestReceivedAt));
@@ -206,6 +214,27 @@ function annotateArchive(t: Thread): void {
   t.archived = true;
 }
 
+// ADR-0037 (slice 8.17). OR aggregation: union of every row's `labels`,
+// deduped case-insensitively (the wire row sets the canonical lowercased
+// form). Sorted case-insensitive lex order so the chip strip and rail
+// counts render deterministically across pages and re-renders.
+function annotateLabels(t: Thread): void {
+  if (t.rows.length === 0) {
+    t.labels = [];
+    return;
+  }
+  const seen = new Set<string>();
+  for (const r of t.rows) {
+    const ls = r.labels;
+    if (!ls) continue;
+    for (const l of ls) {
+      if (typeof l !== "string" || l.length === 0) continue;
+      seen.add(l.toLowerCase());
+    }
+  }
+  t.labels = Array.from(seen).sort((a, b) => a.localeCompare(b));
+}
+
 function upsert(
   buckets: Map<string, Thread>,
   key: string,
@@ -226,6 +255,7 @@ function upsert(
       snoozedUntil: null,
       trashed: false,
       archived: false,
+      labels: [],
       count: 0,
     };
     buckets.set(key, t);

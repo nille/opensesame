@@ -22,6 +22,7 @@ import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
 import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
+import { LabelChips } from "./LabelChips.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -69,6 +70,18 @@ interface ReaderProps {
   unread: boolean;
   readPending: boolean;
   onToggleRead: (rootKey: string, next: boolean) => void;
+  // Slice 8.17 (ADR-0037). Effective label set on this thread (server
+  // labels overlaid with pending deltas; sorted, lowercased). Empty
+  // array hides the chip strip.
+  labels: string[];
+  // Lowercased canonical label → display_name. Falls back to the
+  // canonical key when the catalog hasn't loaded yet.
+  labelDisplayNames: Map<string, string>;
+  // Open the label picker anchored to the reader header.
+  onOpenLabelPicker: (rootKey: string) => void;
+  // Click handler for a chip on the reader. Jumps to the label-scoped
+  // view in App. Optional — unset means chips are read-only.
+  onSelectLabel: (label: string) => void;
 }
 
 // Slice 8.6: the reader pane renders the whole conversation. Subject sits at
@@ -103,6 +116,10 @@ export function Reader({
   unread,
   readPending,
   onToggleRead,
+  labels,
+  labelDisplayNames,
+  onOpenLabelPicker,
+  onSelectLabel,
 }: ReaderProps): JSX.Element {
   if (thread === null) {
     return (
@@ -156,6 +173,10 @@ export function Reader({
       unread={unread}
       readPending={readPending}
       onToggleRead={onToggleRead}
+      labels={labels}
+      labelDisplayNames={labelDisplayNames}
+      onOpenLabelPicker={onOpenLabelPicker}
+      onSelectLabel={onSelectLabel}
     />
   );
 }
@@ -183,6 +204,10 @@ interface ThreadReaderProps {
   unread: boolean;
   readPending: boolean;
   onToggleRead: (rootKey: string, next: boolean) => void;
+  labels: string[];
+  labelDisplayNames: Map<string, string>;
+  onOpenLabelPicker: (rootKey: string) => void;
+  onSelectLabel: (label: string) => void;
 }
 
 function ThreadReader({
@@ -208,6 +233,10 @@ function ThreadReader({
   unread,
   readPending,
   onToggleRead,
+  labels,
+  labelDisplayNames,
+  onOpenLabelPicker,
+  onSelectLabel,
 }: ThreadReaderProps): JSX.Element {
   // ADR-0027 (slice 8.9): when the thread has a server-stamped thread_id
   // (rootKey starts with "<"), fetch the full thread via list_thread_messages
@@ -340,6 +369,18 @@ function ThreadReader({
             size={18}
             onToggle={(next) => onToggleRead(thread.rootKey, next)}
           />
+          <button
+            type="button"
+            className="reader__label-add btn btn--quiet"
+            onClick={() => onOpenLabelPicker(thread.rootKey)}
+            disabled={!threadable}
+            title="Label this thread (l)"
+            aria-label="Open label picker"
+          >
+            <span aria-hidden>＋</span>
+            <span>label</span>
+            <span className="mono faint">l</span>
+          </button>
         </div>
         <div className="reader__threadmeta mono faint">
           {rows.length + thread.failedRows.length}{" "}
@@ -354,6 +395,16 @@ function ThreadReader({
           {archiveFilled && !trashFilled ? " · archived" : ""}
           {unread ? " · unread" : ""}
         </div>
+        {labels.length > 0 ? (
+          <div className="reader__labels">
+            <LabelChips
+              labels={labels}
+              displayNames={labelDisplayNames}
+              variant="header"
+              onClick={onSelectLabel}
+            />
+          </div>
+        ) : null}
       </header>
       <div className="reader__stack">
         {rows.map((row, idx) => {

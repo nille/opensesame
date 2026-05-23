@@ -78,9 +78,13 @@ describe("DynamoMessageReader.searchEmail", () => {
     expect(q.input.IndexName).toBeUndefined();
     expect(q.input.ScanIndexForward).toBe(false);
     expect(q.input.KeyConditionExpression).toMatch(/address\s*=\s*:addr/);
-    // FilterExpression is omitted entirely when there are no structured
-    // filters; the free-text query is folded in app code.
-    expect(q.input.FilterExpression).toBeUndefined();
+    // ADR-0035 + ADR-0037: drafts and label catalog rows share the
+    // partition; search-email always carries both exclusion clauses. No
+    // structured filter contributes here, so the FilterExpression
+    // contains exactly the two catalog guards.
+    expect(q.input.FilterExpression).toBe(
+      "NOT begins_with(internal_id, :draft_pfx) AND NOT begins_with(internal_id, :label_pfx)",
+    );
     expect(
       JSON.stringify(q.input.ExpressionAttributeValues ?? {}),
     ).not.toContain("invoice");
@@ -108,19 +112,24 @@ describe("DynamoMessageReader.searchEmail", () => {
     const q = client.send.mock.calls
       .map((c) => c[0])
       .filter((c): c is QueryCommand => c instanceof QueryCommand)[0]!;
-    expect(q.input.FilterExpression).toMatch(/contains\(#from, :from\)/);
-    expect(q.input.FilterExpression).toMatch(/contains\(#to, :to\)/);
-    expect(q.input.FilterExpression).toMatch(/contains\(#subj, :subj\)/);
+    // ADR-0036 (slice 8.17): structured filters compile through the AST
+    // pipeline. Value refs are auto-numbered (`:v0`, `:v1`, …) per the
+    // operator compiler, and `to:` ORs across to_raw + cc_raw so an
+    // operator typing `to:alice` finds CC'd threads too.
+    const fe = String(q.input.FilterExpression);
+    expect(fe).toMatch(/contains\(#from, :v\d+\)/);
+    expect(fe).toMatch(/contains\(#subject, :v\d+\)/);
+    expect(fe).toMatch(/contains\(#to, :v\d+\) OR contains\(#cc, :v\d+\)/);
     expect(q.input.ExpressionAttributeNames).toMatchObject({
       "#from": "from_raw",
       "#to": "to_raw",
-      "#subj": "subject",
+      "#cc": "cc_raw",
+      "#subject": "subject",
     });
-    expect(q.input.ExpressionAttributeValues).toMatchObject({
-      ":from": "bob@example.com",
-      ":to": "alice@acme.com",
-      ":subj": "Q2",
-    });
+    const vals = q.input.ExpressionAttributeValues as Record<string, unknown>;
+    expect(Object.values(vals)).toEqual(
+      expect.arrayContaining(["bob@example.com", "alice@acme.com", "Q2"]),
+    );
   });
 
   it("pushes since+until into the KeyCondition as a BETWEEN over internal_id", async () => {
@@ -296,6 +305,56 @@ describe("DynamoMessageReader.searchEmail", () => {
     });
     // Skeleton row didn't match on metadata, didn't get fan-out, dropped.
     expect(result.messages).toHaveLength(0);
+  });
+
+  it("compiles AST flags (is:unread, has:attachment) and view (in:trash) into FilterExpression (ADR-0036)", async () => {
+    const client = makeStubClient(async () => ({ Items: [], Count: 0 }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    // The dispatcher hands us a parsed AST when the operator typed
+    // `from:bob is:unread has:attachment in:trash`. We feed it directly
+    // here to exercise the compiler without re-parsing.
+    await reader.searchEmail({
+      address: "alice@acme.com",
+      query: "",
+      ast: {
+        free: [],
+        from: { include: ["bob"], exclude: [] },
+        to: { include: [], exclude: [] },
+        subject: { include: [], exclude: [] },
+        flags: { unread: true, has_attachment: true },
+        view: "trash",
+      },
+      limit: 25,
+      cursor: null,
+      since: null,
+      until: null,
+      from: null,
+      to: null,
+      subject: null,
+    });
+
+    const q = client.send.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is QueryCommand => c instanceof QueryCommand)[0]!;
+    const fe = String(q.input.FilterExpression);
+    // from:bob → contains(#from, :vN)
+    expect(fe).toMatch(/contains\(#from, :v\d+\)/);
+    // is:unread → attribute_not_exists on read_at (the alias in the compiler)
+    expect(fe).toMatch(/attribute_not_exists\(#fa_unread\)/);
+    // has:attachment → attribute_exists on attachments
+    expect(fe).toMatch(/attribute_exists\(#fa_has_attachment\)/);
+    // in:trash → attribute_exists on trashed_at
+    expect(fe).toMatch(/attribute_exists\(#trashed\)/);
+    expect(q.input.ExpressionAttributeNames).toMatchObject({
+      "#from": "from_raw",
+      "#fa_unread": "read_at",
+      "#fa_has_attachment": "attachments",
+      "#trashed": "trashed_at",
+    });
   });
 
   it("propagates LastEvaluatedKey as next_cursor (opaque)", async () => {

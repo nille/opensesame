@@ -145,6 +145,13 @@ export type ReadMessageOk = {
   // Aggregation and wake-on-reply rules mirror trash; archive lives
   // alongside trash so the two states are independent.
   archived_at: string | null;
+  // ADR-0037 (slice 8.17): per-row sparse multi-valued label set, projected
+  // from the DynamoDB String Set `labels` attribute. Always an array on the
+  // wire (never null, never absent). Sorted lexicographic case-insensitive
+  // so the same set renders identically across rounds of refetching.
+  // Attribute-absent on the row → []. Aggregation rule for the thread is OR
+  // (any row carries the label → thread is labelled), per the star precedent.
+  labels: string[];
 };
 
 export type ReadMessageFailed = {
@@ -207,6 +214,11 @@ export type InboxRowOk = {
   // (Inbox, Sent, Starred, Snoozed, Trash) filters them out. Wake-on-reply
   // falls out of the same every-row aggregation as trash.
   archived_at: string | null;
+  // ADR-0037 (slice 8.17): per-row sparse multi-valued label set. Same OR
+  // aggregation rule as starred — any row carries the label → thread is
+  // labelled. Always an array (never null, never absent), sorted
+  // lexicographic case-insensitive.
+  labels: string[];
 };
 
 export type InboxRowFailed = {
@@ -256,6 +268,11 @@ export type SearchEmailInput = {
   from?: string | null;
   to?: string | null;
   subject?: string | null;
+  // ADR-0036 (slice 8.17). Operator AST + flag-shape view scope. The
+  // dispatcher pre-parses `query` and passes the AST in; direct callers
+  // (CLI tests, future MCP wrapper) can pass `null` and let the reader
+  // parse its own input.
+  ast?: import("./search-operators.js").SearchAst | null;
 };
 
 export type SearchEmailResult = {
@@ -368,6 +385,81 @@ export type MarkReadResult =
   | { kind: "already_read"; read_at: string }
   | { kind: "not_found" };
 
+// ADR-0035 (slice 8.17). Drafts are a parallel data plane in the Messages
+// table — same partition (`address`), different SK prefix (`DRAFT#<ulid>`).
+// schema_v stays "1"; `kind: "draft"` is the explicit row marker so a Query
+// that accidentally surfaces a draft (e.g. an inbox scan that forgets to
+// guard the SK prefix) can fast-skip it. v1 is plain-text only — body_html
+// is a reserved tail-add. Recipient fields are nullable strings (not
+// `string[]`) so re-opening a draft preserves exactly the bytes the
+// operator typed, including a trailing comma mid-completion; address-list
+// splitting lives only in the send-time `parseAddrList`.
+export type StoredDraft = {
+  schema_v: "1";
+  kind: "draft";
+  address: string;
+  draft_id: string;
+  body_text: string;
+  to: string | null;
+  cc: string | null;
+  subject: string | null;
+  in_reply_to: string | null;
+  references: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// `draft_id: null` on first save — the reader mints a ULID. Subsequent
+// saves pass the canonical id back. Recipient fields are optional on the
+// wire (caller can omit) and nullable when present (caller can clear).
+export type SaveDraftInput = {
+  address: string;
+  draft_id: string | null;
+  body_text: string;
+  to?: string | null;
+  cc?: string | null;
+  subject?: string | null;
+  in_reply_to?: string | null;
+  references?: string | null;
+};
+
+// Echoes both timestamps so the composer's "saved · 2s ago" footer and
+// optimistic-pending machinery render without a refetch — same posture as
+// archive_thread echoing archived_at.
+export type SaveDraftResult = {
+  draft_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListDraftsInput = {
+  address: string;
+  limit: number;
+  cursor?: string | null;
+};
+
+export type ListDraftsResult = {
+  drafts: StoredDraft[];
+  next_cursor: string | null;
+};
+
+export type GetDraftInput = {
+  address: string;
+  draft_id: string;
+};
+
+export type DeleteDraftInput = {
+  address: string;
+  draft_id: string;
+};
+
+// `deleted: false` is the idempotent no-op shape — the row was already gone.
+// Same posture as mark_read returning already_read rather than 404.
+export type DeleteDraftResult = {
+  draft_id: string;
+  deleted: boolean;
+};
+
 // ADR-0031 (slice 8.13). Per-thread read/unread toggle. Wire shape mirrors
 // star (boolean) — the per-thread path is last-write-wins to behave like a
 // UI toggle; the per-row markRead from slice 8.2 stays first-write-wins for
@@ -383,6 +475,87 @@ export type MarkThreadReadResult = {
   read: boolean;
   read_at: string | null;
   updated_count: number;
+};
+
+// ADR-0037 (slice 8.17). Labels are a multi-valued sparse attribute on
+// Messages rows (DynamoDB String Set). Membership is many-to-many: a thread
+// can carry N labels and a label can apply to N threads. The OR aggregation
+// rule from star applies — any row with the label → thread labelled.
+//
+// `label` on the wire is the lowercased form (catalog identity is
+// case-insensitive). Display casing is preserved separately via the catalog
+// row's `display_name`.
+export type AddThreadLabelInput = {
+  thread_id: string;
+  label: string;
+};
+
+export type RemoveThreadLabelInput = {
+  thread_id: string;
+  label: string;
+};
+
+// `labels` is the post-state for the operator's lead row, sorted
+// lexicographic case-insensitive. Same posture as archive_thread echoing
+// archived_at — the optimistic UI renders without a refetch.
+export type ThreadLabelResult = {
+  thread_id: string;
+  label: string;
+  labels: string[];
+  updated_count: number;
+};
+
+// ADR-0037 (slice 8.17). Catalog row: explicit `LABEL#<lowercased>` items
+// colocated with the message rows on the same partition. The
+// case-preserved label is stored in `display_name`; `label` is the
+// canonical lowercased form used for catalog identity and on-the-wire
+// fan-out values.
+export type LabelCatalogEntry = {
+  label: string;
+  display_name: string;
+  created_at: string;
+};
+
+export type ListLabelsInput = {
+  address: string;
+};
+
+export type ListLabelsResult = {
+  labels: LabelCatalogEntry[];
+};
+
+export type CreateLabelInput = {
+  address: string;
+  // Case-preserved as typed by the operator. The reader lowercases for
+  // catalog identity and stores the original in `display_name`.
+  label: string;
+};
+
+export type DeleteLabelInput = {
+  address: string;
+  label: string;
+};
+
+// `incomplete: true` when `MAX_RENAME_FANOUT` was hit. The operator can
+// re-call to continue the strip; the per-row delete is idempotent at the
+// set-value level so repeats are safe.
+export type DeleteLabelResult = {
+  label: string;
+  updated_row_count: number;
+  incomplete: boolean;
+};
+
+export type RenameLabelInput = {
+  address: string;
+  from: string;
+  to: string;
+};
+
+export type RenameLabelResult = {
+  from: string;
+  to: string;
+  updated_row_count: number;
+  incomplete: boolean;
 };
 
 export interface MessageReader {
@@ -468,4 +641,65 @@ export interface MessageReader {
     input: ArchiveThreadInput,
     now: Date,
   ): Promise<ArchiveThreadResult>;
+  // ADR-0035 (slice 8.17): upsert-by-id. `draft_id: null` on first save
+  // mints a fresh ULID; subsequent saves are conditional UpdateItems
+  // guarded by `attribute_exists(address) AND #kind = :draft` so a stale
+  // primary key cannot create a phantom draft and a draft deleted from
+  // another tab cannot be silently revived. ConditionalCheckFailed surfaces
+  // as null — the dispatcher maps it to 404 draft_not_found.
+  saveDraft(
+    input: SaveDraftInput,
+    now: Date,
+  ): Promise<SaveDraftResult | null>;
+  // ADR-0035 (slice 8.17): Query the address partition's DRAFT# region.
+  // Descending so most-recently-created drafts sort first; ULID-time-prefix
+  // is the SK so no separate updated_at index is needed.
+  listDrafts(input: ListDraftsInput): Promise<ListDraftsResult>;
+  // ADR-0035 (slice 8.17): point-Get a single draft. Returns null on
+  // missing — dispatcher maps to 404.
+  getDraft(input: GetDraftInput): Promise<StoredDraft | null>;
+  // ADR-0035 (slice 8.17): unconditional DeleteItem. Idempotent — already-
+  // missing returns `deleted: false` rather than 404. The wire shape
+  // mirrors mark_read's `already_read` posture so a double-click doesn't
+  // surface a stale-key error.
+  deleteDraft(input: DeleteDraftInput): Promise<DeleteDraftResult>;
+  // ADR-0037 (slice 8.17): add the label to every row in the thread (set
+  // ADD via fanOutThreadAttribute's `setOp: "add"` branch). Idempotent at
+  // the set-value level — re-applying is a no-op. Resolves rows via
+  // ThreadIdGSI; empty thread → updated_count: 0.
+  addThreadLabel(
+    input: AddThreadLabelInput,
+    now: Date,
+  ): Promise<ThreadLabelResult>;
+  // ADR-0037 (slice 8.17): remove the label from every row in the thread
+  // (set DELETE via fanOutThreadAttribute's `setOp: "delete"` branch).
+  // DDB drops the attribute when the last set value is removed.
+  removeThreadLabel(
+    input: RemoveThreadLabelInput,
+    now: Date,
+  ): Promise<ThreadLabelResult>;
+  // ADR-0037 (slice 8.17): list catalog entries for the mailbox.
+  // Single Query with begins_with(SK, "LABEL#"); v1 catalogs are
+  // operator-scale and fit in one page.
+  listLabels(input: ListLabelsInput): Promise<ListLabelsResult>;
+  // ADR-0037 (slice 8.17): conditional PutItem with
+  // attribute_not_exists(SK). Returns null on conflict — dispatcher maps
+  // to 409 already_exists.
+  createLabel(
+    input: CreateLabelInput,
+    now: Date,
+  ): Promise<LabelCatalogEntry | null>;
+  // ADR-0037 (slice 8.17): DeleteItem on the catalog row + bulk strip
+  // across rows carrying the value. Capped at MAX_RENAME_FANOUT; the
+  // result echoes `incomplete: true` when the cap is hit so the operator
+  // can re-call. Missing catalog row → 200 no-op (idempotent).
+  deleteLabel(input: DeleteLabelInput): Promise<DeleteLabelResult>;
+  // ADR-0037 (slice 8.17): catalog new + catalog old delete + bulk
+  // fan-out across rows carrying `from`. Returns null on `to` already
+  // existing in the catalog (dispatcher maps to 409); MAX_RENAME_FANOUT
+  // ceiling surfaced via `incomplete`.
+  renameLabel(
+    input: RenameLabelInput,
+    now: Date,
+  ): Promise<RenameLabelResult | null>;
 }

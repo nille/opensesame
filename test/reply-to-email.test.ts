@@ -38,7 +38,9 @@ function makeParent(over: Partial<ReadMessageOk> = {}): ReadMessageOk {
     thread_id: null,
     starred_at: null,
     snoozed_until: null,
-    trashed_at: null,    archived_at: null,
+    trashed_at: null,
+    archived_at: null,
+    labels: [],
   };
   return {
     ...base,

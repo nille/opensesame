@@ -46,6 +46,7 @@ function row(
     snoozed_until: null,
     trashed_at: null,
     archived_at: null,
+    labels: [],
     ...partial,
   };
 }
@@ -962,6 +963,97 @@ describe("groupIntoThreads", () => {
       const out = groupIntoThreads(rows, NOW);
       expect(out[0]!.archived).toBe(true);
       expect(out[0]!.trashed).toBe(false);
+    });
+  });
+
+  describe("Thread.labels OR aggregation (ADR-0037 / slice 8.17)", () => {
+    const NOW = new Date("2026-05-22T10:00:00.000Z");
+
+    it("returns [] when no row carries any label", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          labels: [],
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.labels).toEqual([]);
+    });
+
+    it("OR-aggregates labels across rows: any row carrying X means the thread carries X", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          labels: ["work"],
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          labels: ["urgent"],
+        }),
+        row({
+          internal_id: "01H0000000000000000000C",
+          received_at: "2026-05-20T12:00:00.000Z",
+          message_id: "<r2@example.com>",
+          references: "<root@example.com>",
+          labels: [],
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.labels).toEqual(["urgent", "work"]);
+    });
+
+    it("dedupes case-insensitively and sorts case-insensitive lex", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          labels: ["Work", "alpha"],
+        }),
+        row({
+          internal_id: "01H0000000000000000000B",
+          received_at: "2026-05-20T11:00:00.000Z",
+          message_id: "<r1@example.com>",
+          references: "<root@example.com>",
+          // Wire-form is canonical lowercase, but the aggregator should
+          // tolerate mixed casing defensively — only lowercased forms
+          // appear in the output.
+          labels: ["WORK", "Beta"],
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.labels).toEqual(["alpha", "beta", "work"]);
+    });
+
+    it("ignores empty / non-string entries on a row defensively", () => {
+      const rows: InboxRow[] = [
+        row({
+          internal_id: "01H0000000000000000000A",
+          received_at: "2026-05-20T10:00:00.000Z",
+          message_id: "<root@example.com>",
+          // The wire schema disallows non-strings, but groupIntoThreads
+          // defends against a malformed row leaking corruption into the
+          // chip strip.
+          labels: ["work", "", null as unknown as string],
+        }),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.labels).toEqual(["work"]);
+    });
+
+    it("a parse-failed singleton thread reads with no labels (skeleton can't carry them)", () => {
+      const rows: InboxRow[] = [
+        failed("01H0000000000000000000A", "2026-05-20T10:00:00.000Z"),
+      ];
+      const out = groupIntoThreads(rows, NOW);
+      expect(out[0]!.labels).toEqual([]);
     });
   });
 });

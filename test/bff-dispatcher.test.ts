@@ -5,6 +5,7 @@ import {
   type SendEmailResult,
 } from "../src/bff/dispatcher.js";
 import type { SendEmailInput } from "../src/bff/schemas.js";
+import type { SearchEmailInput as ReaderSearchEmailInput } from "../src/core/store.js";
 
 // Dispatcher is framework-agnostic per ADR-0021: it takes a parsed
 // {path, body} and returns {status, body}. The Hono adapter wraps it
@@ -36,7 +37,18 @@ function makeDeps(overrides: Partial<BffDeps> = {}): BffDeps {
       starThread: vi.fn(noop),
       snoozeThread: vi.fn(noop),
       trashThread: vi.fn(noop),
-      markThreadRead: vi.fn(noop),      archiveThread: vi.fn(noop),
+      markThreadRead: vi.fn(noop),
+      archiveThread: vi.fn(noop),
+      saveDraft: vi.fn(noop),
+      listDrafts: vi.fn(noop),
+      getDraft: vi.fn(noop),
+      deleteDraft: vi.fn(noop),
+      addThreadLabel: vi.fn(noop),
+      removeThreadLabel: vi.fn(noop),
+      listLabels: vi.fn(noop),
+      createLabel: vi.fn(noop),
+      deleteLabel: vi.fn(noop),
+      renameLabel: vi.fn(noop),
     },
     sendEmail: vi.fn(noop),
     ...overrides,
@@ -84,6 +96,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/read_inbox", {
@@ -116,6 +138,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -155,6 +187,7 @@ describe("dispatch", () => {
       starred_at: null,
       snoozed_until: null,
       trashed_at: null,      archived_at: null,
+      labels: [],
     };
     const deps = makeDeps({
       reader: {
@@ -170,6 +203,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_message", {
@@ -264,6 +307,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/get_attachment", {
@@ -290,6 +343,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       attachmentPresigner: {
         presignDownload: vi.fn(),
@@ -343,6 +406,7 @@ describe("dispatch", () => {
       starred_at: null,
       snoozed_until: null,
       trashed_at: null,      archived_at: null,
+      labels: [],
     };
     const presign = vi.fn();
     const deps: BffDeps = {
@@ -360,6 +424,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -398,6 +472,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       attachmentPresigner: { presignDownload: vi.fn() },
       attachmentBucket: "raw-mime-test",
@@ -457,6 +541,7 @@ describe("dispatch", () => {
       starred_at: null,
       snoozed_until: null,
       trashed_at: null,      archived_at: null,
+      labels: [],
     };
     const presign = vi.fn(async () => ({
       url: "https://s3.example.com/signed-url",
@@ -477,6 +562,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       attachmentPresigner: { presignDownload: presign },
       attachmentBucket: "raw-mime-test",
@@ -528,6 +623,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -557,6 +662,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -589,6 +704,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -622,6 +747,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -659,6 +794,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_read", {
@@ -709,11 +854,50 @@ describe("dispatch", () => {
     });
   });
 
+  it("search_email: 400 with parser message + position when query has unknown operator (ADR-0036)", async () => {
+    // The closed operator set is enforced by the parser; bad grammar must
+    // surface as a 400 with a field-pointer body the web client can render
+    // inline, not silently fall through to substring search.
+    const r = await dispatch(makeDeps(), "/rpc/search_email", {
+      address: "alice@example.com",
+      query: "from:alice foo:bar",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "query",
+      reason: "invalid_value",
+    });
+    const body = r.body as { message: string; position?: number };
+    expect(body.message).toMatch(/unknown operator/i);
+    // "foo:bar" begins at column 11 — the BFF echoes the parser's offset
+    // so the UI can underline the offending token.
+    expect(body.position).toBe(11);
+  });
+
+  it("search_email: 400 when query has an unclosed quote", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/search_email", {
+      address: "alice@example.com",
+      query: 'subject:"q2',
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "query",
+      reason: "invalid_value",
+    });
+    expect((r.body as { message: string }).message).toMatch(/unclosed quote/);
+  });
+
   it("search_email: 200 — forwards parsed input with nullable defaults filled in", async () => {
-    const searchEmail = vi.fn(async () => ({
-      messages: [],
-      next_cursor: null,
-    }));
+    const searchEmail = vi.fn(
+      async (
+        _input: ReaderSearchEmailInput,
+      ): Promise<{ messages: never[]; next_cursor: null }> => ({
+        messages: [],
+        next_cursor: null,
+      }),
+    );
     const deps = makeDeps({
       reader: {
         listInbox: vi.fn(),
@@ -728,6 +912,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/search_email", {
@@ -736,7 +930,23 @@ describe("dispatch", () => {
       from: "bob@example.com",
     });
     expect(r.status).toBe(200);
-    expect(searchEmail).toHaveBeenCalledWith({
+    // ADR-0036 (slice 8.17): the parsed AST rides through to the reader
+    // alongside the legacy wire fields. Match on the relevant fields and
+    // assert the AST has a single free-text fragment.
+    expect(searchEmail).toHaveBeenCalledTimes(1);
+    const call = searchEmail.mock.calls[0]![0] as {
+      address: string;
+      query: string;
+      limit: number;
+      cursor: unknown;
+      since: unknown;
+      until: unknown;
+      from: unknown;
+      to: unknown;
+      subject: unknown;
+      ast: { free: string[] };
+    };
+    expect(call).toMatchObject({
       address: "alice@example.com",
       query: "invoice",
       limit: 50,
@@ -747,6 +957,7 @@ describe("dispatch", () => {
       to: null,
       subject: null,
     });
+    expect(call.ast.free).toEqual(["invoice"]);
     expect(r.body).toEqual({ messages: [], next_cursor: null });
   });
 
@@ -782,6 +993,7 @@ describe("dispatch", () => {
       starred_at: null,
       snoozed_until: null,
       trashed_at: null,      archived_at: null,
+      labels: [],
       ...over,
     };
   }
@@ -824,6 +1036,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -859,6 +1081,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -891,6 +1123,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/reply_to_email", {
@@ -929,6 +1171,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       sendEmail,
     });
@@ -979,6 +1231,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
       sendEmail,
     });
@@ -1034,6 +1296,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1068,6 +1340,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1101,6 +1383,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1134,6 +1426,16 @@ describe("dispatch", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/list_thread_messages", {
@@ -1198,6 +1500,16 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1239,6 +1551,16 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1266,6 +1588,16 @@ describe("dispatch /rpc/star_thread (ADR-0028)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/star_thread", {
@@ -1365,6 +1697,16 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1404,6 +1746,16 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1438,6 +1790,16 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1465,6 +1827,16 @@ describe("dispatch /rpc/snooze_thread (ADR-0029)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/snooze_thread", {
@@ -1532,6 +1904,16 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         trashThread,
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
@@ -1573,6 +1955,16 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         trashThread,
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
@@ -1600,6 +1992,16 @@ describe("dispatch /rpc/trash_thread (ADR-0030)", () => {
         }),
         markThreadRead: vi.fn(),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/trash_thread", {
@@ -1670,6 +2072,16 @@ describe("dispatch /rpc/mark_thread_read (ADR-0031)", () => {
         trashThread: vi.fn(),
         markThreadRead,
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_thread_read", {
@@ -1711,6 +2123,16 @@ describe("dispatch /rpc/mark_thread_read (ADR-0031)", () => {
         trashThread: vi.fn(),
         markThreadRead,
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_thread_read", {
@@ -1738,6 +2160,16 @@ describe("dispatch /rpc/mark_thread_read (ADR-0031)", () => {
           throw new Error("ddb boom");
         }),
         archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/mark_thread_read", {
@@ -1807,6 +2239,16 @@ describe("dispatch /rpc/archive_thread (ADR-0034)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread,
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/archive_thread", {
@@ -1848,6 +2290,16 @@ describe("dispatch /rpc/archive_thread (ADR-0034)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread,
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/archive_thread", {
@@ -1879,6 +2331,16 @@ describe("dispatch /rpc/archive_thread (ADR-0034)", () => {
         trashThread: vi.fn(),
         markThreadRead: vi.fn(),
         archiveThread,
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/archive_thread", {
@@ -1910,6 +2372,16 @@ describe("dispatch /rpc/archive_thread (ADR-0034)", () => {
         archiveThread: vi.fn(async () => {
           throw new Error("ddb boom");
         }),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
       },
     });
     const r = await dispatch(deps, "/rpc/archive_thread", {
@@ -1918,5 +2390,727 @@ describe("dispatch /rpc/archive_thread (ADR-0034)", () => {
     });
     expect(r.status).toBe(500);
     expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+// ADR-0035 (slice 8.17): drafts. save / list / get / delete map to
+// 200 / 400 / 404 / 500. No 409 (no suppression posture). No 422.
+describe("dispatch /rpc/save_draft (ADR-0035)", () => {
+  it("400 when address is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/save_draft", {
+      draft_id: null,
+      body_text: "hi",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "address",
+    });
+  });
+
+  it("400 when draft_id is absent (not the same as null)", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/save_draft", {
+      address: "alice@acme.com",
+      body_text: "hi",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "draft_id",
+    });
+  });
+
+  it("400 when body_text is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: null,
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "body_text",
+    });
+  });
+
+  it("200 — first save: passes draft_id=null through to the reader", async () => {
+    const saveDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      created_at: "2026-05-22T10:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft,
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: null,
+      body_text: "hello",
+      subject: "WIP",
+    });
+    expect(r.status).toBe(200);
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: "alice@acme.com",
+        draft_id: null,
+        body_text: "hello",
+        subject: "WIP",
+      }),
+      expect.any(Date),
+    );
+    expect(r.body).toEqual({
+      draft_id: "01KS500000000000000000DR01",
+      created_at: "2026-05-22T10:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    });
+  });
+
+  it("404 when the reader returns null (stale draft_id)", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(async () => null),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "x",
+    });
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({ code: "draft_not_found" });
+  });
+
+  it("500 when the reader throws", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(async () => {
+          throw new Error("ddb boom");
+        }),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: null,
+      body_text: "x",
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+describe("dispatch /rpc/list_drafts (ADR-0035)", () => {
+  it("400 when address is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/list_drafts", {});
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "address",
+    });
+  });
+
+  it("200 — clamps limit to MAX_DRAFTS_LIMIT and forwards cursor", async () => {
+    const listDrafts = vi.fn(async () => ({ drafts: [], next_cursor: null }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts,
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_drafts", {
+      address: "alice@acme.com",
+      limit: 99999,
+      cursor: "opaque-cursor-string",
+    });
+    expect(r.status).toBe(200);
+    expect(listDrafts).toHaveBeenCalledTimes(1);
+    expect(listDrafts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: "alice@acme.com",
+        // 200 = MAX_DRAFTS_LIMIT in dispatcher.ts (clamped from 99999).
+        limit: 200,
+        cursor: "opaque-cursor-string",
+      }),
+    );
+  });
+
+  it("200 — defaults limit and cursor when omitted", async () => {
+    const listDrafts = vi.fn(async () => ({ drafts: [], next_cursor: null }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts,
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/list_drafts", {
+      address: "alice@acme.com",
+    });
+    expect(r.status).toBe(200);
+    expect(listDrafts).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: "alice@acme.com",
+        cursor: null,
+      }),
+    );
+  });
+});
+
+describe("dispatch /rpc/get_draft (ADR-0035)", () => {
+  it("400 when draft_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/get_draft", {
+      address: "alice@acme.com",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "draft_id",
+    });
+  });
+
+  it("404 when the reader returns null", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(async () => null),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/get_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DRXX",
+    });
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({ code: "draft_not_found" });
+  });
+
+  it("200 — echoes the projected draft", async () => {
+    const stored = {
+      schema_v: "1" as const,
+      kind: "draft" as const,
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      to: null,
+      cc: null,
+      subject: null,
+      in_reply_to: null,
+      references: null,
+      created_at: "2026-05-22T09:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    };
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(async () => stored),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/get_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual(stored);
+  });
+});
+
+describe("dispatch /rpc/delete_draft (ADR-0035)", () => {
+  it("400 when draft_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/delete_draft", {
+      address: "alice@acme.com",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "draft_id",
+    });
+  });
+
+  it("200 — echoes deleted: true on a hit", async () => {
+    const deleteDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      deleted: true,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft,
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      draft_id: "01KS500000000000000000DR01",
+      deleted: true,
+    });
+  });
+
+  it("200 — echoes deleted: false on a miss (idempotent, not 404)", async () => {
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(async () => ({
+          draft_id: "01KS500000000000000000DRXX",
+          deleted: false,
+        })),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DRXX",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ deleted: false });
+  });
+});
+
+// ADR-0037 (slice 8.17). Label RPCs. The reader-side label methods are
+// exercised in test/labels.test.ts; the dispatcher tests below verify
+// schema rejection (400 with field pointer), happy-path forwarding, and
+// the 409 already_exists conflict mapping for create / rename.
+
+// Stub-builder for label dispatcher tests. Each helper takes the one method
+// the test cares about and fills the rest with `vi.fn()` stubs so the
+// `BffDeps.reader` shape stays satisfied.
+function readerWith(
+  partial: Partial<BffDeps["reader"]>,
+): BffDeps["reader"] {
+  return {
+    listInbox: vi.fn(),
+    getByMessageId: vi.fn(),
+    getByPrimaryKey: vi.fn(),
+    markRead: vi.fn(),
+    markReadByPrimaryKey: vi.fn(),
+    searchEmail: vi.fn(),
+    listThreadMessages: vi.fn(),
+    starThread: vi.fn(),
+    snoozeThread: vi.fn(),
+    trashThread: vi.fn(),
+    markThreadRead: vi.fn(),
+    archiveThread: vi.fn(),
+    saveDraft: vi.fn(),
+    listDrafts: vi.fn(),
+    getDraft: vi.fn(),
+    deleteDraft: vi.fn(),
+    addThreadLabel: vi.fn(),
+    removeThreadLabel: vi.fn(),
+    listLabels: vi.fn(),
+    createLabel: vi.fn(),
+    deleteLabel: vi.fn(),
+    renameLabel: vi.fn(),
+    ...partial,
+  };
+}
+
+describe("dispatch /rpc/add_thread_label (ADR-0037)", () => {
+  it("400 when thread_id is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/add_thread_label", {
+      label: "work",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "thread_id" });
+  });
+
+  it("400 when label is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/add_thread_label", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "label" });
+  });
+
+  it("400 when label exceeds 32 characters", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/add_thread_label", {
+      thread_id: "<root@example.com>",
+      label: "x".repeat(33),
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "label" });
+  });
+
+  it("200 — forwards parsed input and echoes the reader result", async () => {
+    const addThreadLabel = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      label: "work",
+      labels: ["work"],
+      updated_count: 2,
+    }));
+    const deps = makeDeps({ reader: readerWith({ addThreadLabel }) });
+    const r = await dispatch(deps, "/rpc/add_thread_label", {
+      thread_id: "<root@example.com>",
+      label: "Work",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      thread_id: "<root@example.com>",
+      label: "work",
+      labels: ["work"],
+      updated_count: 2,
+    });
+    expect(addThreadLabel).toHaveBeenCalledWith(
+      { thread_id: "<root@example.com>", label: "Work" },
+      expect.any(Date),
+    );
+  });
+});
+
+describe("dispatch /rpc/remove_thread_label (ADR-0037)", () => {
+  it("400 when label is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/remove_thread_label", {
+      thread_id: "<root@example.com>",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "label" });
+  });
+
+  it("200 — forwards parsed input and echoes the reader result", async () => {
+    const removeThreadLabel = vi.fn(async () => ({
+      thread_id: "<root@example.com>",
+      label: "work",
+      labels: [],
+      updated_count: 1,
+    }));
+    const deps = makeDeps({ reader: readerWith({ removeThreadLabel }) });
+    const r = await dispatch(deps, "/rpc/remove_thread_label", {
+      thread_id: "<root@example.com>",
+      label: "work",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ updated_count: 1, labels: [] });
+  });
+});
+
+describe("dispatch /rpc/list_labels (ADR-0037)", () => {
+  it("400 when address is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/list_labels", {});
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "address" });
+  });
+
+  it("200 — forwards address and returns the catalog list", async () => {
+    const listLabels = vi.fn(async () => ({
+      labels: [
+        {
+          label: "alpha",
+          display_name: "Alpha",
+          created_at: "2026-05-21T00:00:00.000Z",
+        },
+      ],
+    }));
+    const deps = makeDeps({ reader: readerWith({ listLabels }) });
+    const r = await dispatch(deps, "/rpc/list_labels", {
+      address: "alice@acme.com",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      labels: [
+        expect.objectContaining({ label: "alpha", display_name: "Alpha" }),
+      ],
+    });
+    expect(listLabels).toHaveBeenCalledWith({ address: "alice@acme.com" });
+  });
+});
+
+describe("dispatch /rpc/create_label (ADR-0037)", () => {
+  it("400 when label is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/create_label", {
+      address: "alice@acme.com",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "label" });
+  });
+
+  it("200 — happy path forwards address+label and echoes the new catalog entry", async () => {
+    const createLabel = vi.fn(async () => ({
+      label: "work",
+      display_name: "Work",
+      created_at: "2026-05-22T10:00:00.000Z",
+    }));
+    const deps = makeDeps({ reader: readerWith({ createLabel }) });
+    const r = await dispatch(deps, "/rpc/create_label", {
+      address: "alice@acme.com",
+      label: "Work",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ label: "work", display_name: "Work" });
+  });
+
+  it("409 already_exists when reader returns null (ConditionalCheckFailed)", async () => {
+    const createLabel = vi.fn(async () => null);
+    const deps = makeDeps({ reader: readerWith({ createLabel }) });
+    const r = await dispatch(deps, "/rpc/create_label", {
+      address: "alice@acme.com",
+      label: "Work",
+    });
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ code: "already_exists" });
+  });
+});
+
+describe("dispatch /rpc/delete_label (ADR-0037)", () => {
+  it("400 when address is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/delete_label", {
+      label: "work",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "address" });
+  });
+
+  it("200 — echoes the strip result, including incomplete: true on a paged cap", async () => {
+    const deleteLabel = vi.fn(async () => ({
+      label: "work",
+      updated_row_count: 1000,
+      incomplete: true,
+    }));
+    const deps = makeDeps({ reader: readerWith({ deleteLabel }) });
+    const r = await dispatch(deps, "/rpc/delete_label", {
+      address: "alice@acme.com",
+      label: "Work",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      label: "work",
+      updated_row_count: 1000,
+      incomplete: true,
+    });
+  });
+});
+
+describe("dispatch /rpc/rename_label (ADR-0037)", () => {
+  it("400 when from is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/rename_label", {
+      address: "alice@acme.com",
+      to: "Career",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "from" });
+  });
+
+  it("400 when from and to differ only in case", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/rename_label", {
+      address: "alice@acme.com",
+      from: "Work",
+      to: "WORK",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({ code: "invalid_request", field: "to" });
+  });
+
+  it("200 — happy path forwards the triple and echoes the strip result", async () => {
+    const renameLabel = vi.fn(async () => ({
+      from: "work",
+      to: "career",
+      updated_row_count: 3,
+      incomplete: false,
+    }));
+    const deps = makeDeps({ reader: readerWith({ renameLabel }) });
+    const r = await dispatch(deps, "/rpc/rename_label", {
+      address: "alice@acme.com",
+      from: "Work",
+      to: "Career",
+    });
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({
+      from: "work",
+      to: "career",
+      updated_row_count: 3,
+    });
+  });
+
+  it("409 already_exists when reader returns null (destination row already exists)", async () => {
+    const renameLabel = vi.fn(async () => null);
+    const deps = makeDeps({ reader: readerWith({ renameLabel }) });
+    const r = await dispatch(deps, "/rpc/rename_label", {
+      address: "alice@acme.com",
+      from: "Work",
+      to: "Career",
+    });
+    expect(r.status).toBe(409);
+    expect(r.body).toMatchObject({ code: "already_exists" });
   });
 });

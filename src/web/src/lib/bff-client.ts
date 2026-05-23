@@ -142,6 +142,11 @@ export type InboxRowOk = {
   // never archived. groupIntoThreads aggregates "every row stamped →
   // archived", same wake-on-reply shape as trash. Independent attribute.
   archived_at: string | null;
+  // ADR-0037 (slice 8.17): per-row label set, projected from the DDB SS as
+  // a sorted Array (lexicographic, case-insensitive). Empty on rows without
+  // any label. groupIntoThreads aggregates "any row with X → thread has X"
+  // — OR aggregation, same posture as star.
+  labels: string[];
 };
 
 export type InboxRowFailed = {
@@ -255,6 +260,61 @@ export type ArchiveThreadResult = {
   updated_count: number;
 };
 
+// ADR-0037 (slice 8.17). Operator-defined labels. Many-to-many membership:
+// a thread carries N labels, a label applies to N threads. add_thread_label
+// / remove_thread_label echo the operator's lead row's post-state so the
+// optimistic UI can render chips without a refetch.
+export type AddThreadLabelInput = { thread_id: string; label: string };
+export type RemoveThreadLabelInput = { thread_id: string; label: string };
+
+export type ThreadLabelResult = {
+  thread_id: string;
+  label: string;
+  labels: string[];
+  updated_count: number;
+};
+
+export type LabelCatalogEntry = {
+  label: string;
+  display_name: string;
+  created_at: string;
+};
+
+export type ListLabelsInput = { address: string };
+export type ListLabelsResult = { labels: LabelCatalogEntry[] };
+
+export type CreateLabelInput = { address: string; label: string };
+
+export type DeleteLabelInput = { address: string; label: string };
+export type DeleteLabelResult = {
+  label: string;
+  updated_row_count: number;
+  incomplete: boolean;
+};
+
+export type RenameLabelInput = { address: string; from: string; to: string };
+export type RenameLabelResult = {
+  from: string;
+  to: string;
+  updated_row_count: number;
+  incomplete: boolean;
+};
+
+// 409 already_exists arrives as RpcError on this client; create / rename
+// surface a typed `conflict` variant so the UI can branch without sniffing
+// status codes.
+export type RpcConflict = { kind: "conflict"; code: string; message: string };
+export type CreateLabelRpcResult =
+  | RpcOk<LabelCatalogEntry>
+  | RpcInvalid
+  | RpcConflict
+  | RpcError;
+export type RenameLabelRpcResult =
+  | RpcOk<RenameLabelResult>
+  | RpcInvalid
+  | RpcConflict
+  | RpcError;
+
 export type ReadMessageHeaders = {
   from: string | null;
   to: string | null;
@@ -302,6 +362,8 @@ export type ReadMessageOk = {
   trashed_at: string | null;
   // ADR-0034 (slice 8.16): per-row sparse archive annotation.
   archived_at: string | null;
+  // ADR-0037 (slice 8.17): per-row label set, sorted Array projection.
+  labels: string[];
 };
 
 // One of `message_id` or (`address`, `internal_id`) is echoed back, mirroring
@@ -361,6 +423,73 @@ export type ReplyToEmailInput = {
   body_text: string;
   body_html?: string;
   reply_all?: boolean;
+};
+
+// ADR-0035 (slice 8.17): drafts share the address partition with messages
+// but live under SK prefix "DRAFT#" with a `kind: "draft"` marker. Optional
+// recipient fields use the absent-vs-null trichotomy: omitted = "leave alone
+// on upsert", null = "explicitly clear", string = "set". The wire shape is
+// preserved end-to-end through schema → dispatcher → reader.
+export type StoredDraft = {
+  schema_v: "1";
+  kind: "draft";
+  address: string;
+  draft_id: string;
+  body_text: string;
+  to: string | null;
+  cc: string | null;
+  subject: string | null;
+  in_reply_to: string | null;
+  references: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// First save: omit draft_id (or pass null) and the server mints a ULID.
+// Subsequent saves: pass the minted draft_id; the server upserts the row.
+// Optional fields default to "absent" — pass null to explicitly clear, omit
+// to leave the prior value alone.
+export type SaveDraftInput = {
+  address: string;
+  draft_id?: string | null;
+  body_text: string;
+  to?: string | null;
+  cc?: string | null;
+  subject?: string | null;
+  in_reply_to?: string | null;
+  references?: string | null;
+};
+
+export type SaveDraftResult = {
+  draft_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ListDraftsInput = {
+  address: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export type ListDraftsResult = {
+  drafts: StoredDraft[];
+  next_cursor: string | null;
+};
+
+export type GetDraftInput = {
+  address: string;
+  draft_id: string;
+};
+
+export type DeleteDraftInput = {
+  address: string;
+  draft_id: string;
+};
+
+export type DeleteDraftResult = {
+  draft_id: string;
+  deleted: boolean;
 };
 
 // ---- API surface ----
@@ -483,7 +612,103 @@ export const bff = {
     }
     return { kind: "error", code, message };
   },
+  // ADR-0035 (slice 8.17). Persist a draft. First save omits draft_id;
+  // subsequent saves pass the minted id and the server upserts. A 404
+  // means the draft was deleted from another tab — UIs should drop the
+  // stale id and fall back to first-save on the next debounce.
+  saveDraft(input: SaveDraftInput): Promise<RpcResult<SaveDraftResult>> {
+    return call<SaveDraftResult>("save_draft", input);
+  },
+  listDrafts(input: ListDraftsInput): Promise<RpcResult<ListDraftsResult>> {
+    return call<ListDraftsResult>("list_drafts", input);
+  },
+  getDraft(input: GetDraftInput): Promise<RpcResult<StoredDraft>> {
+    return call<StoredDraft>("get_draft", input);
+  },
+  deleteDraft(
+    input: DeleteDraftInput,
+  ): Promise<RpcResult<DeleteDraftResult>> {
+    return call<DeleteDraftResult>("delete_draft", input);
+  },
+  // ADR-0037 (slice 8.17). Per-thread label fan-out + per-mailbox catalog.
+  addThreadLabel(
+    input: AddThreadLabelInput,
+  ): Promise<RpcResult<ThreadLabelResult>> {
+    return call<ThreadLabelResult>("add_thread_label", input);
+  },
+  removeThreadLabel(
+    input: RemoveThreadLabelInput,
+  ): Promise<RpcResult<ThreadLabelResult>> {
+    return call<ThreadLabelResult>("remove_thread_label", input);
+  },
+  listLabels(input: ListLabelsInput): Promise<RpcResult<ListLabelsResult>> {
+    return call<ListLabelsResult>("list_labels", input);
+  },
+  createLabel(input: CreateLabelInput): Promise<CreateLabelRpcResult> {
+    return callConflictAware<LabelCatalogEntry>("create_label", input);
+  },
+  deleteLabel(
+    input: DeleteLabelInput,
+  ): Promise<RpcResult<DeleteLabelResult>> {
+    return call<DeleteLabelResult>("delete_label", input);
+  },
+  renameLabel(input: RenameLabelInput): Promise<RenameLabelRpcResult> {
+    return callConflictAware<RenameLabelResult>("rename_label", input);
+  },
   health(): Promise<Response> {
     return fetch(`${BFF_BASE}/health`);
   },
 };
+
+// 409 already_exists is surfaced as a typed `conflict` variant so the
+// catalog UI can branch without sniffing HTTP status codes. All other
+// error shapes pass through unchanged. Used by create_label and rename_label;
+// other tools never produce 409 already_exists.
+async function callConflictAware<T>(
+  tool: string,
+  body: unknown,
+): Promise<RpcOk<T> | RpcInvalid | RpcConflict | RpcError> {
+  let res: Response;
+  try {
+    res = await fetch(`${BFF_BASE}/rpc/${tool}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return {
+      kind: "error",
+      code: "network_error",
+      message: err instanceof Error ? err.message : "BFF unreachable",
+    };
+  }
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    return {
+      kind: "error",
+      code: "invalid_response",
+      message: `BFF returned non-JSON for /rpc/${tool}`,
+    };
+  }
+  if (res.ok) {
+    return { kind: "ok", value: data as T };
+  }
+  const obj = (data ?? {}) as Record<string, unknown>;
+  const code = typeof obj["code"] === "string" ? obj["code"] : "unknown";
+  const message =
+    typeof obj["message"] === "string" ? obj["message"] : `HTTP ${res.status}`;
+  if (res.status === 400 && code === "invalid_request") {
+    return {
+      kind: "invalid_request",
+      field: typeof obj["field"] === "string" ? obj["field"] : "body",
+      reason: (obj["reason"] as RpcInvalid["reason"]) ?? "invalid_type",
+      message,
+    };
+  }
+  if (res.status === 409 && code === "already_exists") {
+    return { kind: "conflict", code, message };
+  }
+  return { kind: "error", code, message };
+}

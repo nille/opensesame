@@ -164,6 +164,13 @@
   }
 }
 
+/* ADR-0036 (slice 8.17): inline parser error. Same row as the hit count;
+   coloured with the existing danger token rather than a fresh hue so
+   the rail doesn't grow a new palette entry just for one message. */
+.rail__search-status--error {
+  color: var(--danger);
+}
+
 .rail__nav {
   display: flex;
   flex-direction: column;
@@ -507,6 +514,27 @@
 
 .inbox-row--failed .inbox-row__subject {
   color: var(--danger);
+}
+
+/* ADR-0035 (slice 8.17). Drafts list placeholders for empty fields.
+   Faint italic so the row reads as "in-progress, missing piece" rather
+   than a styled value the operator might mistake for real content. */
+.drafts-row__placeholder {
+  font-style: italic;
+}
+
+.drafts-row__delete {
+  font-size: var(--t-mono-base);
+  line-height: 1;
+  padding: 0 4px;
+  color: var(--ink-faint);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.drafts-row__delete:hover {
+  color: var(--ink);
 }
 
 /* ============================================================
@@ -999,6 +1027,32 @@
 
 .composer__footmeta {
   font-size: var(--t-mono-xs);
+}
+
+/* ADR-0038 (slice 8.17). Send row holds the Send button and the
+   secondary "Send + archive" button. Both are .btn--primary; the
+   modifier on the second adds an inline archive glyph and a slightly
+   tighter padding so the pair fits the composer's max width. */
+.composer__send-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--r-2);
+}
+
+.composer__send-archive {
+  padding-left: var(--r-2);
+  padding-right: var(--r-2);
+  gap: 6px;
+}
+
+.composer__send-archive-icon {
+  /* Compact archive glyph — picks up the button's foreground colour so
+     it matches the label without a second declaration per theme. */
+  font-size: 0.85em;
+  line-height: 1;
+  display: inline-block;
+  transform: translateY(-1px);
+  opacity: 0.85;
 }
 
 /* ============================================================
@@ -1673,4 +1727,242 @@
 }
 .bulk-bar__clear:hover {
   background: var(--paper);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Labels (slice 8.17, ADR-0037)
+
+   Operator-defined classifications. Visually distinct from the tinted
+   state pills (snoozed / trashed / archived): a 1px --rule border (one
+   step quieter than the state pills' --rule-strong) and --ink-muted
+   text. Reads as quiet content, not workflow state.
+   ──────────────────────────────────────────────────────────────────── */
+
+.inbox-row__labels {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--r-1);
+  margin-left: var(--r-1);
+  vertical-align: baseline;
+}
+
+/* The label chip itself. Read-only on the inbox row (a `<span>`); on the
+   reader header the `<button>` variant adds a subtle hover shift so the
+   "click to navigate" affordance reads. Both variants share the same
+   neutral styling — operator-defined content shouldn't compete with
+   tinted state. */
+.inbox-row__label {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 4px;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: var(--t-mono-xs);
+  color: var(--ink-muted);
+  background: transparent;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  max-width: 12ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.inbox-row__label {
+  cursor: pointer;
+  transition: background-color var(--d-fast) var(--ease-out),
+              color var(--d-fast) var(--ease-out),
+              border-color var(--d-fast) var(--ease-out);
+}
+
+button.inbox-row__label:hover {
+  background: var(--paper-2);
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.inbox-row__label--more {
+  color: var(--ink-faint);
+  font-feature-settings: "tnum" 1;
+}
+
+/* Reader header chip strip. Slightly more breathing room above so the
+   labels read as a separate metadata layer below the threadmeta line. */
+.reader__labels {
+  margin-top: var(--r-2);
+  max-width: var(--reader-max);
+}
+
+/* Subject-row "+ label" affordance. Sits at the end of the action row;
+   matches the visual weight of the existing quiet buttons but stays
+   text-led so it reads as a verb ("apply a label"), not a fifth icon
+   in the workflow-state strip. */
+.reader__label-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+}
+
+.reader__label-add:disabled {
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+
+/* Rail "labels" section. Header is uppercase mono at --t-mono-xs so the
+   tile reads as a section divider, not as another nav item. The hide /
+   reveal toggle reuses the navitem grid for layout consistency. */
+.rail__section-head {
+  font-size: var(--t-mono-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  padding: var(--r-3) var(--r-2) var(--r-1);
+}
+
+.rail__navitem-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.rail__navitem--more {
+  color: var(--ink-faint);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+   Label picker (anchor-positioned, NOT a modal)
+
+   Strategic principle: don't dim a surface that has a pane. The page
+   stays interactive in the periphery; only the overlay's pointer-event
+   capture catches outside-clicks for dismissal.
+   ──────────────────────────────────────────────────────────────────── */
+
+.label-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 18vh;
+  pointer-events: auto;
+  /* No backdrop blur, no scrim. The pane keeps full opacity behind the
+     picker — labels are an inline action, not a context switch. */
+  background: transparent;
+}
+
+.label-picker-overlay--bulk {
+  padding-top: 12vh;
+}
+
+.label-picker {
+  width: min(420px, 92vw);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  box-shadow:
+    0 1px 0 var(--rule),
+    0 12px 32px -16px rgba(0, 0, 0, 0.18);
+  animation: label-picker-rise var(--d-fast) var(--ease-out);
+}
+
+@keyframes label-picker-rise {
+  from { transform: translateY(4px); opacity: 0; }
+  to   { transform: none;            opacity: 1; }
+}
+
+.label-picker__head {
+  padding: var(--r-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.label-picker__input {
+  width: 100%;
+  padding: var(--r-2) var(--r-2);
+  font-size: var(--t-sm);
+  color: var(--ink);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  caret-color: var(--accent);
+}
+
+.label-picker__input::placeholder {
+  color: var(--ink-faint);
+}
+
+.label-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--r-1) 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.label-picker__empty {
+  padding: var(--r-2) var(--r-3);
+  font-size: var(--t-mono-xs);
+}
+
+.label-picker__row {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: var(--r-2);
+  align-items: center;
+  padding: var(--r-1) var(--r-3);
+  cursor: pointer;
+  font-size: var(--t-sm);
+  color: var(--ink-muted);
+  transition: background-color var(--d-fast) var(--ease-out),
+              color var(--d-fast) var(--ease-out);
+}
+
+.label-picker__row--focused {
+  background: var(--paper-2);
+  color: var(--ink);
+}
+
+.label-picker__row--pending {
+  opacity: 0.55;
+}
+
+.label-picker__gutter {
+  text-align: center;
+  font-size: var(--t-mono-sm);
+  color: var(--ink-faint);
+}
+
+.label-picker__gutter[data-presence="on"] {
+  color: var(--accent);
+}
+
+.label-picker__gutter[data-presence="mixed"] {
+  color: var(--ink-muted);
+}
+
+.label-picker__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.label-picker__row--create {
+  color: var(--ink);
+}
+
+.label-picker__row--create .label-picker__gutter {
+  color: var(--accent);
+}
+
+.label-picker__foot {
+  padding: var(--r-2) var(--r-3);
+  font-size: var(--t-mono-xs);
+  border-top: 1px solid var(--rule);
+  letter-spacing: 0.02em;
 }

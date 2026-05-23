@@ -8,10 +8,16 @@
 // Inputs match the MCP tool inputSchema shape (ADR-0007). When the MCP
 // server lands, these types are the same JSON schemas the server publishes.
 
+import {
+  parseSearchQuery,
+  type SearchAst,
+} from "../core/search-operators.js";
+
 export type ParseError = {
   field: string;
   code: "missing" | "invalid_type" | "invalid_value";
   message: string;
+  position?: number;
 };
 
 export type ParseResult<T> =
@@ -179,6 +185,10 @@ export function parseMarkReadInput(body: unknown): ParseResult<MarkReadInput> {
 export type SearchEmailInput = {
   address: string;
   query: string;
+  // ADR-0036 (slice 8.17). Parsed AST so the dispatcher can pass it
+  // straight through to the reader without re-parsing. Always populated
+  // when parseSearchEmailInput returns ok.
+  ast: SearchAst;
   limit?: number;
   cursor?: string;
   since?: string;
@@ -213,7 +223,23 @@ export function parseSearchEmailInput(
     return fail("query", "invalid_value", "query must be a non-empty string");
   }
 
-  const out: SearchEmailInput = { address, query };
+  // ADR-0036: pre-parse the operator grammar at the BFF boundary. Invalid
+  // grammar surfaces as a 400 with a position-aware message; valid input
+  // produces an AST the reader executes verbatim.
+  const parsedAst = parseSearchQuery(query);
+  if (!parsedAst.ok) {
+    const err: ParseError = {
+      field: "query",
+      code: "invalid_value",
+      message: parsedAst.error.message,
+    };
+    if (parsedAst.error.position !== undefined) {
+      err.position = parsedAst.error.position;
+    }
+    return { ok: false, error: err };
+  }
+
+  const out: SearchEmailInput = { address, query, ast: parsedAst.value };
 
   if (obj["limit"] !== undefined) {
     const n = obj["limit"];
@@ -686,6 +712,373 @@ export function parseArchiveThreadInput(
   }
 
   return ok({ thread_id: threadId, archived: obj["archived"] });
+}
+
+// ---- save_draft (ADR-0035) ----
+//
+// Upsert-by-id. `draft_id: null` is first-save (server mints a ULID);
+// `draft_id: <ulid>` is a subsequent save. The wire shape distinguishes
+// "absent" (don't touch the field) from "explicit null" (clear the field)
+// for to/cc/subject/in_reply_to/references — both round-trip through
+// StoredDraft's nullable-string slots. body_text is required and may be
+// empty; an empty body still counts as a saveable artifact (the operator
+// just typed a subject and Cmd-Tabbed away).
+
+export type SaveDraftWireInput = {
+  address: string;
+  draft_id: string | null;
+  body_text: string;
+  to?: string | null;
+  cc?: string | null;
+  subject?: string | null;
+  in_reply_to?: string | null;
+  references?: string | null;
+};
+
+export function parseSaveDraftInput(
+  body: unknown,
+): ParseResult<SaveDraftWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+
+  // draft_id MUST be present (`null` for first-save, `string` for upsert).
+  // An absent draft_id is a malformed request — the composer always knows
+  // whether it's mid-typing a fresh draft or resuming one.
+  if (!("draft_id" in obj)) {
+    return fail(
+      "draft_id",
+      "missing",
+      "draft_id is required (null for first save, string for upsert)",
+    );
+  }
+  const rawId = obj["draft_id"];
+  let draftId: string | null;
+  if (rawId === null) {
+    draftId = null;
+  } else if (typeof rawId === "string") {
+    if (rawId.length === 0) {
+      return fail(
+        "draft_id",
+        "invalid_value",
+        "draft_id must be null or a non-empty string",
+      );
+    }
+    draftId = rawId;
+  } else {
+    return fail(
+      "draft_id",
+      "invalid_type",
+      "draft_id must be null or a string",
+    );
+  }
+
+  const bodyText = expectString(obj["body_text"]);
+  if (bodyText === null) {
+    return fail(
+      "body_text",
+      obj["body_text"] === undefined ? "missing" : "invalid_type",
+      "body_text must be a string",
+    );
+  }
+
+  const out: SaveDraftWireInput = {
+    address,
+    draft_id: draftId,
+    body_text: bodyText,
+  };
+
+  for (const f of [
+    "to",
+    "cc",
+    "subject",
+    "in_reply_to",
+    "references",
+  ] as const) {
+    if (f in obj) {
+      const raw = obj[f];
+      if (raw === null) {
+        out[f] = null;
+      } else if (typeof raw === "string") {
+        out[f] = raw;
+      } else {
+        return fail(f, "invalid_type", `${f} must be a string or null`);
+      }
+    }
+  }
+
+  return ok(out);
+}
+
+// ---- list_drafts (ADR-0035) ----
+
+export type ListDraftsWireInput = {
+  address: string;
+  limit?: number;
+  cursor?: string;
+};
+
+export function parseListDraftsInput(
+  body: unknown,
+): ParseResult<ListDraftsWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+
+  const out: ListDraftsWireInput = { address };
+
+  if (obj["limit"] !== undefined) {
+    const n = obj["limit"];
+    if (
+      typeof n !== "number" ||
+      !Number.isFinite(n) ||
+      !Number.isInteger(n) ||
+      n <= 0
+    ) {
+      return fail("limit", "invalid_value", "limit must be a positive integer");
+    }
+    out.limit = n;
+  }
+
+  if (obj["cursor"] !== undefined) {
+    const c = expectString(obj["cursor"]);
+    if (c === null) {
+      return fail("cursor", "invalid_type", "cursor must be a string");
+    }
+    out.cursor = c;
+  }
+
+  return ok(out);
+}
+
+// ---- get_draft / delete_draft (ADR-0035) ----
+
+export type GetDraftWireInput = {
+  address: string;
+  draft_id: string;
+};
+
+export function parseGetDraftInput(
+  body: unknown,
+): ParseResult<GetDraftWireInput> {
+  return parseAddressDraftId(body);
+}
+
+export type DeleteDraftWireInput = {
+  address: string;
+  draft_id: string;
+};
+
+export function parseDeleteDraftInput(
+  body: unknown,
+): ParseResult<DeleteDraftWireInput> {
+  return parseAddressDraftId(body);
+}
+
+function parseAddressDraftId(
+  body: unknown,
+): ParseResult<{ address: string; draft_id: string }> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+
+  const draftId = expectString(obj["draft_id"]);
+  if (draftId === null || draftId.length === 0) {
+    return fail("draft_id", "missing", "draft_id is required");
+  }
+
+  return ok({ address, draft_id: draftId });
+}
+
+// ---- label-name validator (ADR-0037, slice 8.17) ----
+//
+// Wire-level rules: 1–32 chars after trim, no ASCII control chars, no
+// commas (a later `label:foo,bar` search syntax needs the comma free).
+// Casing is preserved here; the dispatcher lowercases for catalog identity
+// and the row-level fan-out. Empty-after-trim is rejected so we don't
+// store invisible labels.
+
+const LABEL_MAX_LEN = 32;
+
+export function parseLabelName(
+  raw: unknown,
+  field: string = "label",
+): ParseResult<string> {
+  if (raw === undefined) {
+    return fail(field, "missing", `${field} is required`);
+  }
+  if (typeof raw !== "string") {
+    return fail(field, "invalid_type", `${field} must be a string`);
+  }
+  const trimmed = raw.trim();
+  if (trimmed.length === 0) {
+    return fail(field, "invalid_value", `${field} must not be empty`);
+  }
+  if (trimmed.length > LABEL_MAX_LEN) {
+    return fail(
+      field,
+      "invalid_value",
+      `${field} must be ${LABEL_MAX_LEN} characters or fewer`,
+    );
+  }
+  if (trimmed.includes(",")) {
+    return fail(
+      field,
+      "invalid_value",
+      `${field} must not contain commas`,
+    );
+  }
+  for (let i = 0; i < trimmed.length; i++) {
+    const c = trimmed.charCodeAt(i);
+    if (c < 0x20 || c === 0x7f) {
+      return fail(
+        field,
+        "invalid_value",
+        `${field} must not contain control characters`,
+      );
+    }
+  }
+  return ok(trimmed);
+}
+
+// ---- add_thread_label / remove_thread_label (ADR-0037) ----
+
+export type AddThreadLabelWireInput = { thread_id: string; label: string };
+
+export function parseAddThreadLabelInput(
+  body: unknown,
+): ParseResult<AddThreadLabelWireInput> {
+  return parseThreadLabelTuple(body);
+}
+
+export type RemoveThreadLabelWireInput = { thread_id: string; label: string };
+
+export function parseRemoveThreadLabelInput(
+  body: unknown,
+): ParseResult<RemoveThreadLabelWireInput> {
+  return parseThreadLabelTuple(body);
+}
+
+function parseThreadLabelTuple(
+  body: unknown,
+): ParseResult<{ thread_id: string; label: string }> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+
+  const threadId = expectString(obj["thread_id"]);
+  if (threadId === null || threadId.length === 0) {
+    return fail("thread_id", "missing", "thread_id is required");
+  }
+
+  const label = parseLabelName(obj["label"], "label");
+  if (!label.ok) return label;
+
+  return ok({ thread_id: threadId, label: label.value });
+}
+
+// ---- list_labels (ADR-0037) ----
+
+export type ListLabelsWireInput = { address: string };
+
+export function parseListLabelsInput(
+  body: unknown,
+): ParseResult<ListLabelsWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+  return ok({ address });
+}
+
+// ---- create_label / delete_label (ADR-0037) ----
+
+export type CreateLabelWireInput = { address: string; label: string };
+
+export function parseCreateLabelInput(
+  body: unknown,
+): ParseResult<CreateLabelWireInput> {
+  return parseAddressLabelTuple(body);
+}
+
+export type DeleteLabelWireInput = { address: string; label: string };
+
+export function parseDeleteLabelInput(
+  body: unknown,
+): ParseResult<DeleteLabelWireInput> {
+  return parseAddressLabelTuple(body);
+}
+
+function parseAddressLabelTuple(
+  body: unknown,
+): ParseResult<{ address: string; label: string }> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+  const label = parseLabelName(obj["label"], "label");
+  if (!label.ok) return label;
+  return ok({ address, label: label.value });
+}
+
+// ---- rename_label (ADR-0037) ----
+
+export type RenameLabelWireInput = {
+  address: string;
+  from: string;
+  to: string;
+};
+
+export function parseRenameLabelInput(
+  body: unknown,
+): ParseResult<RenameLabelWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+  const from = parseLabelName(obj["from"], "from");
+  if (!from.ok) return from;
+  const to = parseLabelName(obj["to"], "to");
+  if (!to.ok) return to;
+  if (from.value.toLowerCase() === to.value.toLowerCase()) {
+    return fail(
+      "to",
+      "invalid_value",
+      "to must differ from from (case-insensitive)",
+    );
+  }
+  return ok({ address, from: from.value, to: to.value });
 }
 
 // ---- helpers ----

@@ -28,6 +28,7 @@ function thread(rootKey: string): Thread {
     trashed: false,
     archived: false,
     count: 0,
+    labels: [],
   };
 }
 

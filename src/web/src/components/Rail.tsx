@@ -1,4 +1,4 @@
-import type { ChangeEvent, JSX, KeyboardEvent, Ref } from "react";
+import { useState, type ChangeEvent, type JSX, type KeyboardEvent, type Ref } from "react";
 import type { Theme } from "../hooks/useTheme.ts";
 import { formatPolledAt } from "../lib/format.ts";
 
@@ -8,7 +8,27 @@ export type RailView =
   | "starred"
   | "snoozed"
   | "trashed"
-  | "archived";
+  | "archived"
+  | "drafts"
+  // ADR-0037 (slice 8.17). Operator-defined label view. The label is
+  // the canonical lowercased catalog key; the rail renders the
+  // catalog's display_name.
+  | { kind: "label"; label: string };
+
+// ADR-0037 (slice 8.17). One row per catalog entry rendered in the
+// rail's labels section. Display name is the operator's chosen casing;
+// `label` stays lowercased for identity comparisons.
+export interface RailLabel {
+  label: string;
+  display_name: string;
+  count: number;
+}
+
+// Visible-cap for the rail labels section. Above this count the
+// remainder collapses behind a "more (N)" toggle. The cap matches the
+// design budget (~20 visible) and keeps the rail from drowning the
+// fixed-view rows below.
+const LABELS_VISIBLE_CAP = 20;
 
 interface RailProps {
   mailbox: string;
@@ -34,11 +54,25 @@ interface RailProps {
   // ADR-0034 (slice 8.16): count of archived threads in the inbox window.
   // Hidden when zero — same reasoning as starredCount/snoozedCount/trashedCount.
   archivedCount: number;
+  // ADR-0035 (slice 8.17): count of saved drafts. Drafts are auto-saved on
+  // a 1500ms debounce in the composer; the count flickers as the operator
+  // types. Hidden when zero — same reasoning as the other annotation counts.
+  draftsCount: number;
+  // ADR-0037 (slice 8.17). Catalog entries with their thread counts,
+  // sorted by the caller (Rail just renders). Empty list elides the
+  // section entirely; the picker (l) is the way to add the first one.
+  labels: RailLabel[];
   searchQuery: string;
   onSearchChange: (q: string) => void;
   searchInputRef?: Ref<HTMLInputElement>;
   searching: boolean;
   searchHitCount: number | null;
+  // ADR-0036 (slice 8.17): server-side parser error surfaced inline.
+  // Non-null when the BFF returned 400 invalid_request for the search
+  // query — we keep the input visible (the operator is still typing) but
+  // replace the hit-count line with the parser message so they can fix
+  // the token instead of staring at "no results yet".
+  searchError: string | null;
   onSearchKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
 }
 
@@ -61,27 +95,43 @@ export function Rail({
   snoozedCount,
   trashedCount,
   archivedCount,
+  draftsCount,
+  labels,
   searchQuery,
   onSearchChange,
   searchInputRef,
   searching,
   searchHitCount,
+  searchError,
   onSearchKeyDown,
 }: RailProps): JSX.Element {
   const searchActive = searchQuery.length > 0;
+  const isLabelView = typeof view === "object";
+  const labelDisplayName = isLabelView
+    ? labels.find((l) => l.label === view.label)?.display_name ?? view.label
+    : null;
   const title = searchActive
     ? "~/search"
-    : view === "inbox"
-      ? "~/inbox"
-      : view === "starred"
-        ? "~/starred"
-        : view === "snoozed"
-          ? "~/snoozed"
-          : view === "trashed"
-            ? "~/trash"
-            : view === "archived"
-              ? "~/archive"
-              : "~/sent";
+    : isLabelView
+      ? `~/${labelDisplayName}`
+      : view === "inbox"
+        ? "~/inbox"
+        : view === "starred"
+          ? "~/starred"
+          : view === "snoozed"
+            ? "~/snoozed"
+            : view === "trashed"
+              ? "~/trash"
+              : view === "archived"
+                ? "~/archive"
+                : view === "drafts"
+                  ? "~/drafts"
+                  : "~/sent";
+  const [labelsExpanded, setLabelsExpanded] = useState(false);
+  const visibleLabels = labelsExpanded
+    ? labels
+    : labels.slice(0, LABELS_VISIBLE_CAP);
+  const hiddenLabelCount = Math.max(0, labels.length - LABELS_VISIBLE_CAP);
   return (
     <aside className="rail">
       <div className="rail__head">
@@ -104,7 +154,7 @@ export function Rail({
           ref={searchInputRef}
           type="search"
           className="rail__search-input mono"
-          placeholder="search"
+          placeholder="search · from: subject: is:unread …"
           value={searchQuery}
           onChange={(e: ChangeEvent<HTMLInputElement>) =>
             onSearchChange(e.target.value)
@@ -133,17 +183,21 @@ export function Rail({
       {searchActive ? (
         <div
           className={
-            "rail__search-status mono faint" +
-            (searching ? " rail__search-status--pulse" : "")
+            "rail__search-status mono" +
+            (searchError !== null
+              ? " rail__search-status--error"
+              : " faint" + (searching ? " rail__search-status--pulse" : ""))
           }
-          role="status"
+          role={searchError !== null ? "alert" : "status"}
           aria-live="polite"
         >
-          {searching
-            ? "searching…"
-            : searchHitCount === null
-              ? "no results yet"
-              : `${searchHitCount} ${searchHitCount === 1 ? "hit" : "hits"}`}
+          {searchError !== null
+            ? searchError
+            : searching
+              ? "searching…"
+              : searchHitCount === null
+                ? "no results yet"
+                : `${searchHitCount} ${searchHitCount === 1 ? "hit" : "hits"}`}
         </div>
       ) : null}
 
@@ -222,13 +276,67 @@ export function Rail({
             {archivedCount === 0 ? "—" : archivedCount}
           </span>
         </button>
-        <div
-          className="rail__navitem rail__navitem--disabled"
-          title="Slice 8.1"
+        <button
+          type="button"
+          className={
+            "rail__navitem" +
+            (view === "drafts" ? " rail__navitem--active" : "")
+          }
+          onClick={() => onChangeView("drafts")}
         >
           <span>drafts</span>
-          <span className="mono faint">—</span>
-        </div>
+          <span className="mono faint">
+            {draftsCount === 0 ? "—" : draftsCount}
+          </span>
+        </button>
+
+        {labels.length > 0 ? (
+          <>
+            <div
+              className="rail__section-head mono faint"
+              aria-hidden
+            >
+              labels
+            </div>
+            {visibleLabels.map((l) => {
+              const active = isLabelView && view.label === l.label;
+              return (
+                <button
+                  key={l.label}
+                  type="button"
+                  className={
+                    "rail__navitem" +
+                    (active ? " rail__navitem--active" : "")
+                  }
+                  onClick={() =>
+                    onChangeView({ kind: "label", label: l.label })
+                  }
+                  title={l.display_name}
+                >
+                  <span className="rail__navitem-label">
+                    {l.display_name}
+                  </span>
+                  <span className="mono faint">
+                    {l.count === 0 ? "—" : l.count}
+                  </span>
+                </button>
+              );
+            })}
+            {hiddenLabelCount > 0 ? (
+              <button
+                type="button"
+                className="rail__navitem rail__navitem--more mono faint"
+                onClick={() => setLabelsExpanded((v) => !v)}
+                aria-expanded={labelsExpanded}
+              >
+                <span>
+                  {labelsExpanded ? "fewer" : `more (${hiddenLabelCount})`}
+                </span>
+                <span aria-hidden>{labelsExpanded ? "↑" : "↓"}</span>
+              </button>
+            ) : null}
+          </>
+        ) : null}
       </nav>
 
       <div className="rail__spacer" />
