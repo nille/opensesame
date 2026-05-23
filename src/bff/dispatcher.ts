@@ -635,6 +635,7 @@ async function handleSaveDraft(
     body_text: wire.body_text,
   };
   for (const f of [
+    "body_html",
     "to",
     "cc",
     "subject",

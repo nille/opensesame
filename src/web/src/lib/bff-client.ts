@@ -456,6 +456,10 @@ export type StoredDraft = {
   address: string;
   draft_id: string;
   body_text: string;
+  // ADR-0042 (slice 8.21): TipTap HTML if the draft carries any formatting.
+  // Null on plain-text drafts and on every draft created before this field
+  // existed; the composer falls back to body_text paragraphs in that case.
+  body_html: string | null;
   to: string | null;
   cc: string | null;
   subject: string | null;
@@ -473,6 +477,7 @@ export type SaveDraftInput = {
   address: string;
   draft_id?: string | null;
   body_text: string;
+  body_html?: string | null;
   to?: string | null;
   cc?: string | null;
   subject?: string | null;

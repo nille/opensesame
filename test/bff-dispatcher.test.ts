@@ -2717,6 +2717,7 @@ describe("dispatch /rpc/get_draft (ADR-0035)", () => {
       address: "alice@acme.com",
       draft_id: "01KS500000000000000000DR01",
       body_text: "hi",
+      body_html: null,
       to: null,
       cc: null,
       subject: null,

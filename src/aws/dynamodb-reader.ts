@@ -1132,6 +1132,10 @@ async function saveDraft(
       address: input.address,
       draft_id: ulid,
       body_text: input.body_text,
+      // ADR-0042 (slice 8.21). Tail-add nullable column. First-save
+      // collapses absent input.body_html to null — the operator hasn't
+      // formatted anything yet, or formatting was structurally trivial.
+      body_html: input.body_html ?? null,
       to: input.to ?? null,
       cc: input.cc ?? null,
       subject: input.subject ?? null,
@@ -1199,6 +1203,7 @@ async function saveDraft(
   // "leave alone", a present null means "clear". Both round-trip identically
   // through DDB because StoredDraft's recipient slots are nullable strings.
   const optionalFields: ReadonlyArray<keyof SaveDraftInput> = [
+    "body_html",
     "to",
     "cc",
     "subject",
@@ -1713,6 +1718,10 @@ function projectDraftRow(row: Record<string, unknown>): StoredDraft | null {
     address,
     draft_id: draftId,
     body_text: bodyText,
+    // ADR-0042 (slice 8.21). Tail-add: pre-existing rows lack the
+    // attribute and surface as null, which the composer treats as
+    // "no formatting" and falls back to body_text paragraphs.
+    body_html: nullableString(row["body_html"]),
     to: nullableString(row["to"]),
     cc: nullableString(row["cc"]),
     subject: nullableString(row["subject"]),

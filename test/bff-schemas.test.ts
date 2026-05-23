@@ -955,6 +955,55 @@ describe("parseSaveDraftInput (ADR-0035)", () => {
     expect(parseSaveDraftInput([]).ok).toBe(false);
     expect(parseSaveDraftInput("x").ok).toBe(false);
   });
+
+  it("accepts body_html as a string (ADR-0042 rich-text save)", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: null,
+      body_text: "hi",
+      body_html: "<p>hi</p>",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.body_html).toBe("<p>hi</p>");
+  });
+
+  it("accepts body_html: null to explicitly clear the column", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      body_html: null,
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect("body_html" in r.value).toBe(true);
+      expect(r.value.body_html).toBeNull();
+    }
+  });
+
+  it("preserves the absent-vs-null distinction on body_html", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect("body_html" in r.value).toBe(false);
+  });
+
+  it("rejects a non-string body_html", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: null,
+      body_text: "hi",
+      body_html: 123,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("body_html");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
 });
 
 describe("parseListDraftsInput (ADR-0035)", () => {

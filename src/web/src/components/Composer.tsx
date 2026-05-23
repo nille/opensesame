@@ -272,11 +272,13 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [to, cc, subject, bodyText, seed, parent, replyAll]);
 
-  // ADR-0035 (slice 8.17). Debounced auto-save. Fires 1500ms after the
-  // last edit when the buffer has any content. The first save mints a
-  // ULID and stamps draftId; subsequent saves upsert the same row.
-  // Empty buffers don't fire — a freshly-opened composer with nothing
-  // typed shouldn't create a phantom draft.
+  // ADR-0035 (slice 8.17) + ADR-0042 (slice 8.21). Debounced auto-save.
+  // Fires 1500ms after the last edit when the buffer has any content.
+  // The first save mints a ULID and stamps draftId; subsequent saves
+  // upsert the same row. Empty buffers don't fire — a freshly-opened
+  // composer with nothing typed shouldn't create a phantom draft.
+  // bodyHtml is in the deps too so a formatting-only change (e.g.
+  // selecting existing prose and toggling bold) still schedules a save.
   useEffect(() => {
     if (!draftsEnabled) return;
     if (!hasContent(to, cc, subject, bodyText)) return;
@@ -284,10 +286,10 @@ export function Composer({
       void saveDraftNow();
     }, DRAFT_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(handle);
-    // saveDraftNow closes over draftId/from/to/cc/subject/bodyText, so
-    // we depend on the inputs themselves rather than a stable callback.
+    // saveDraftNow closes over draftId/from/to/cc/subject/bodyText/bodyHtml,
+    // so we depend on the inputs themselves rather than a stable callback.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [to, cc, subject, bodyText, draftsEnabled]);
+  }, [to, cc, subject, bodyText, bodyHtml, draftsEnabled]);
 
   const saveDraftNow = async (): Promise<void> => {
     setDraftStatus({ kind: "saving" });
@@ -296,6 +298,16 @@ export function Composer({
       body_text: bodyText,
     };
     if (draftId !== null) input.draft_id = draftId;
+    // ADR-0042 (slice 8.21). Persist HTML when the draft carries real
+    // formatting; otherwise send null so a previously-formatted draft
+    // that the operator stripped down to plain text doesn't quietly
+    // round-trip with the old <strong> tags. Trivial docs (no marks,
+    // no list, no quote) save as null too — they reload fine from the
+    // body_text paragraph fallback and avoid persisting the stub
+    // "<p>...</p>" wrapper that's purely a TipTap serialization
+    // artifact.
+    input.body_html =
+      bodyHtml.length > 0 && !isStructurallyTrivial(bodyHtml) ? bodyHtml : null;
     if (to.length > 0) input.to = to;
     if (cc.length > 0) input.cc = cc;
     if (subject.length > 0) input.subject = subject;
@@ -649,6 +661,7 @@ export function Composer({
       </Field>
 
       <RichEditor
+        initialHtml={resumeDraft?.body_html ?? null}
         initialText={initialBodyText}
         placeholder={replyMode ? "Reply…" : "Body…"}
         onChange={({ html, text }) => {

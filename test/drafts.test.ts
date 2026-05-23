@@ -236,6 +236,131 @@ describe("DynamoMessageReader.saveDraft (ADR-0035)", () => {
     ).toBeNull();
   });
 
+  it("first save: persists body_html when the input carries rich-text HTML (ADR-0042)", async () => {
+    const puts: PutCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof PutCommand) {
+        puts.push(cmd);
+        return {};
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+      makeUlid: fixedUlid(["01KS500000000000000000DR01"]),
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: null,
+        body_text: "hi",
+        body_html: "<p>hi</p>",
+      },
+      NOW,
+    );
+    expect(puts[0]!.input.Item).toMatchObject({
+      body_text: "hi",
+      body_html: "<p>hi</p>",
+    });
+  });
+
+  it("first save: defaults body_html to null when omitted", async () => {
+    const puts: PutCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof PutCommand) {
+        puts.push(cmd);
+        return {};
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+      makeUlid: fixedUlid(["01KS500000000000000000DR01"]),
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: null,
+        body_text: "hi",
+      },
+      NOW,
+    );
+    expect((puts[0]!.input.Item as Record<string, unknown>).body_html).toBeNull();
+  });
+
+  it("upsert: explicit null body_html clears the column (SET body_html = :body_html)", async () => {
+    const updates: UpdateCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof UpdateCommand) {
+        updates.push(cmd);
+        return { Attributes: {} };
+      }
+      if (cmd instanceof GetCommand) {
+        return { Item: { created_at: "2026-05-22T09:00:00.000Z" } };
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: "01KS500000000000000000DR01",
+        body_text: "x",
+        body_html: null,
+      },
+      NOW,
+    );
+
+    const u = updates[0]!;
+    expect(String(u.input.UpdateExpression)).toMatch(
+      /body_html\s*=\s*:body_html/,
+    );
+    expect(
+      (u.input.ExpressionAttributeValues as Record<string, unknown>)[
+        ":body_html"
+      ],
+    ).toBeNull();
+  });
+
+  it("upsert: omitting body_html leaves the column untouched", async () => {
+    const updates: UpdateCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof UpdateCommand) {
+        updates.push(cmd);
+        return { Attributes: {} };
+      }
+      if (cmd instanceof GetCommand) {
+        return { Item: { created_at: "2026-05-22T09:00:00.000Z" } };
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: "01KS500000000000000000DR01",
+        body_text: "x",
+      },
+      NOW,
+    );
+
+    expect(String(updates[0]!.input.UpdateExpression)).not.toMatch(
+      /body_html\s*=/,
+    );
+  });
+
   it("upsert: returns null when the row is gone (deleted from another tab)", async () => {
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof UpdateCommand) {
@@ -455,6 +580,66 @@ describe("DynamoMessageReader.getDraft", () => {
       draft_id: "01KS500000000000000000DRXX",
     });
     expect(draft).toBeNull();
+  });
+
+  it("projects body_html onto the StoredDraft (ADR-0042)", async () => {
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof GetCommand) {
+        return {
+          Item: {
+            kind: "draft",
+            schema_v: "1",
+            address: "alice@acme.com",
+            draft_id: "01KS500000000000000000DR01",
+            internal_id: "DRAFT#01KS500000000000000000DR01",
+            body_text: "hi",
+            body_html: "<p>hi</p>",
+            created_at: "2026-05-22T09:00:00.000Z",
+            updated_at: "2026-05-22T10:00:00.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const draft = await reader.getDraft({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(draft).not.toBeNull();
+    expect(draft!.body_html).toBe("<p>hi</p>");
+  });
+
+  it("body_html stays null when the row pre-dates ADR-0042", async () => {
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof GetCommand) {
+        return {
+          Item: {
+            kind: "draft",
+            schema_v: "1",
+            address: "alice@acme.com",
+            draft_id: "01KS500000000000000000DR01",
+            internal_id: "DRAFT#01KS500000000000000000DR01",
+            body_text: "hi",
+            created_at: "2026-05-22T09:00:00.000Z",
+            updated_at: "2026-05-22T10:00:00.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const draft = await reader.getDraft({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(draft!.body_html).toBeNull();
   });
 });
 

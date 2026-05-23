@@ -852,6 +852,11 @@ export type SaveDraftWireInput = {
   address: string;
   draft_id: string | null;
   body_text: string;
+  // ADR-0042 (slice 8.21). Optional HTML body. Absent → leave the stored
+  // value alone on upsert (preserves a previously formatted draft when the
+  // composer fires an auto-save before the next debounce). Null → clear
+  // (operator stripped all formatting). String → set.
+  body_html?: string | null;
   to?: string | null;
   cc?: string | null;
   subject?: string | null;
@@ -919,6 +924,7 @@ export function parseSaveDraftInput(
   };
 
   for (const f of [
+    "body_html",
     "to",
     "cc",
     "subject",

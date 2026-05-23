@@ -396,17 +396,23 @@ export type MarkReadResult =
 // table — same partition (`address`), different SK prefix (`DRAFT#<ulid>`).
 // schema_v stays "1"; `kind: "draft"` is the explicit row marker so a Query
 // that accidentally surfaces a draft (e.g. an inbox scan that forgets to
-// guard the SK prefix) can fast-skip it. v1 is plain-text only — body_html
-// is a reserved tail-add. Recipient fields are nullable strings (not
-// `string[]`) so re-opening a draft preserves exactly the bytes the
-// operator typed, including a trailing comma mid-completion; address-list
-// splitting lives only in the send-time `parseAddrList`.
+// guard the SK prefix) can fast-skip it. Recipient fields are nullable
+// strings (not `string[]`) so re-opening a draft preserves exactly the
+// bytes the operator typed, including a trailing comma mid-completion;
+// address-list splitting lives only in the send-time `parseAddrList`.
+//
+// ADR-0042 (slice 8.21) extension: `body_html` is the TipTap-serialized
+// HTML when the operator's draft carries any rich-text formatting (bold,
+// italic, link, list, blockquote). Null on plain-text drafts and on every
+// draft created before the field existed; the composer falls back to
+// loading body_text as paragraphs in that case.
 export type StoredDraft = {
   schema_v: "1";
   kind: "draft";
   address: string;
   draft_id: string;
   body_text: string;
+  body_html: string | null;
   to: string | null;
   cc: string | null;
   subject: string | null;
@@ -419,10 +425,14 @@ export type StoredDraft = {
 // `draft_id: null` on first save — the reader mints a ULID. Subsequent
 // saves pass the canonical id back. Recipient fields are optional on the
 // wire (caller can omit) and nullable when present (caller can clear).
+// `body_html` follows the same absent-vs-null trichotomy: omitted = leave
+// the stored value alone on upsert, null = clear (operator stripped all
+// formatting), string = set.
 export type SaveDraftInput = {
   address: string;
   draft_id: string | null;
   body_text: string;
+  body_html?: string | null;
   to?: string | null;
   cc?: string | null;
   subject?: string | null;
