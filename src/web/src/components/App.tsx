@@ -535,24 +535,6 @@ export function App(): JSX.Element {
     return out;
   }, [labelPicker, pendingLabels]);
 
-  const onPickerToggle = useCallback(
-    (label: string, target: "on" | "off"): void => {
-      if (labelPicker === null) return;
-      for (const rootKey of labelPicker.rootKeys) {
-        toggleLabel(rootKey, label, target);
-      }
-    },
-    [labelPicker, toggleLabel],
-  );
-
-  const onPickerCreate = useCallback(
-    async (label: string): Promise<void> => {
-      if (labelPicker === null) return;
-      await createAndApplyLabel(labelPicker.rootKeys, label);
-    },
-    [labelPicker, createAndApplyLabel],
-  );
-
   const closePicker = useCallback((): void => {
     setLabelPicker(null);
   }, []);
@@ -1012,6 +994,24 @@ export function App(): JSX.Element {
       }
     },
     [queryClient, toggleLabel],
+  );
+
+  const onPickerToggle = useCallback(
+    (label: string, target: "on" | "off"): void => {
+      if (labelPicker === null) return;
+      for (const rootKey of labelPicker.rootKeys) {
+        toggleLabel(rootKey, label, target);
+      }
+    },
+    [labelPicker, toggleLabel],
+  );
+
+  const onPickerCreate = useCallback(
+    async (label: string): Promise<void> => {
+      if (labelPicker === null) return;
+      await createAndApplyLabel(labelPicker.rootKeys, label);
+    },
+    [labelPicker, createAndApplyLabel],
   );
 
   // ADR-0032 (slice 8.14). Toggle a thread's membership in the bulk

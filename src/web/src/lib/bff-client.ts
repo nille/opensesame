@@ -5,7 +5,13 @@
 // raw status. When slice 9 swaps the BFF for an MCP client behind the same
 // `/rpc/*` shape, only the base URL and the auth header change.
 
-const BFF_BASE = (import.meta.env["VITE_BFF_BASE"] as string) ?? "http://127.0.0.1:3000";
+// `import.meta.env` is provided by Vite at build time. The cast keeps the
+// access portable across tsconfigs that don't include `vite/client`
+// (e.g. the top-level project tsconfig that builds tests).
+const BFF_BASE =
+  ((import.meta as { env?: Record<string, string | undefined> }).env?.[
+    "VITE_BFF_BASE"
+  ] ?? "http://127.0.0.1:3000");
 
 export type RpcOk<T> = { kind: "ok"; value: T };
 export type RpcInvalid = {
