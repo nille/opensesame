@@ -320,31 +320,38 @@ function stringSetToArray(v: unknown): string[] {
   return [];
 }
 
+// ULID timestamps span 48 bits, so the leading Crockford char is always
+// 0–7. `7ZZZ...` is therefore the lex-largest possible message internal_id
+// and `0000...` the lex-smallest, while DRAFT# (`D…`) and LABEL# (`L…`)
+// sort strictly above `7Z…`. Used as KeyCondition bounds to scope queries
+// to the message-row band without needing a FilterExpression on the
+// primary key (which DDB rejects).
+const MESSAGE_SK_LOWER_BOUND = "0".repeat(26);
+const MESSAGE_SK_UPPER_BOUND = "7" + "Z".repeat(25);
+
 async function listInbox(
   deps: DynamoMessageReaderDeps,
   input: ListInboxInput,
 ): Promise<ListInboxResult> {
-  const exprValues: Record<string, unknown> = {
-    ":addr": input.address,
-    // ADR-0035: drafts share the address partition under a DRAFT# SK
-    // prefix; exclude them from inbox listings.
-    ":draft_pfx": DRAFT_SK_PREFIX,
-    // ADR-0037: catalog rows live on the same partition under LABEL# SK;
-    // also excluded from inbox listings.
-    ":label_pfx": LABEL_SK_PREFIX,
-  };
-  let keyCond = "address = :addr";
-  if (input.since) {
-    exprValues[":since"] = makeInternalIdLowerBound(input.since);
-    keyCond = "address = :addr AND internal_id > :since";
-  }
+  // DDB rejects FilterExpressions on primary key attributes ("Filter
+  // Expression can only contain non-primary key attributes"). Push the
+  // DRAFT#/LABEL# exclusion into the KeyCondition instead: real message
+  // SKs are ULIDs whose first Crockford char is 0–7 (48-bit time fits in
+  // 4 bits of the leading char), while DRAFT# starts with 'D' and LABEL#
+  // with 'L'. A BETWEEN over [MESSAGE_SK_LOWER, MESSAGE_SK_UPPER] therefore
+  // covers every plausible message id and excludes both catalog ranges.
+  const exprValues: Record<string, unknown> = { ":addr": input.address };
+  const lowerBound = input.since
+    ? makeInternalIdLowerBound(input.since)
+    : MESSAGE_SK_LOWER_BOUND;
+  exprValues[":sk_lo"] = lowerBound;
+  exprValues[":sk_hi"] = MESSAGE_SK_UPPER_BOUND;
+  const keyCond = "address = :addr AND internal_id BETWEEN :sk_lo AND :sk_hi";
 
   const out = await deps.client.send(
     new QueryCommand({
       TableName: deps.messagesTable,
       KeyConditionExpression: keyCond,
-      FilterExpression:
-        "NOT begins_with(internal_id, :draft_pfx) AND NOT begins_with(internal_id, :label_pfx)",
       ExpressionAttributeValues: exprValues,
       ScanIndexForward: false,
       Limit: input.limit,
@@ -535,19 +542,20 @@ async function searchEmail(
   deps: DynamoMessageReaderDeps,
   input: SearchEmailInput,
 ): Promise<SearchEmailResult> {
+  // Same DDB constraint as listInbox: primary key attributes (`internal_id`)
+  // cannot appear in a FilterExpression. The DRAFT#/LABEL# exclusion folds
+  // into the BETWEEN bounds so the catalog rows never enter the candidate
+  // window. since/until tighten the lower/upper end when the operator
+  // narrows by date.
   const exprValues: Record<string, unknown> = { ":addr": input.address };
-  let keyCond = "address = :addr";
-  if (input.since && input.until) {
-    exprValues[":since"] = makeInternalIdLowerBound(input.since);
-    exprValues[":until"] = makeInternalIdUpperBound(input.until);
-    keyCond = "address = :addr AND internal_id BETWEEN :since AND :until";
-  } else if (input.since) {
-    exprValues[":since"] = makeInternalIdLowerBound(input.since);
-    keyCond = "address = :addr AND internal_id > :since";
-  } else if (input.until) {
-    exprValues[":until"] = makeInternalIdUpperBound(input.until);
-    keyCond = "address = :addr AND internal_id < :until";
-  }
+  exprValues[":since"] = input.since
+    ? makeInternalIdLowerBound(input.since)
+    : MESSAGE_SK_LOWER_BOUND;
+  exprValues[":until"] = input.until
+    ? makeInternalIdUpperBound(input.until)
+    : MESSAGE_SK_UPPER_BOUND;
+  const keyCond =
+    "address = :addr AND internal_id BETWEEN :since AND :until";
 
   // ADR-0036 (slice 8.17). Operator AST drives the structured filter
   // assembly. Legacy top-level from/to/subject fold into the AST; if the
@@ -562,16 +570,11 @@ async function searchEmail(
   for (const [k, v] of Object.entries(compiled.values)) {
     exprValues[k] = v;
   }
-  // ADR-0035: drafts share the partition under a DRAFT# SK prefix; the
-  // search surface scopes to message-shaped rows only. Drafts have no
-  // message_id / received_at and would otherwise leak through with
-  // metadata-miss semantics.
-  exprValues[":draft_pfx"] = DRAFT_SK_PREFIX;
-  filters.push("NOT begins_with(internal_id, :draft_pfx)");
-  // ADR-0037: catalog rows under LABEL# also fall outside the search
-  // surface — same reasoning as drafts.
-  exprValues[":label_pfx"] = LABEL_SK_PREFIX;
-  filters.push("NOT begins_with(internal_id, :label_pfx)");
+  // ADR-0035 + ADR-0037: drafts (DRAFT#) and label catalog rows (LABEL#)
+  // share the partition; both ranges sort outside the message ULID band
+  // (0–7), so the BETWEEN bounds set on keyCond above already exclude
+  // them. No FilterExpression clause needed (DDB rejects filters on the
+  // primary key anyway).
   // Don't push the free-text fragments into FilterExpression. DDB
   // `contains` is case-sensitive and we want case-insensitive UX; metadata
   // matching is repeated in app code below alongside the body fan-out,

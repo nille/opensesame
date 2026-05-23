@@ -79,15 +79,18 @@ describe("DynamoMessageReader.searchEmail", () => {
     expect(q.input.ScanIndexForward).toBe(false);
     expect(q.input.KeyConditionExpression).toMatch(/address\s*=\s*:addr/);
     // ADR-0035 + ADR-0037: drafts and label catalog rows share the
-    // partition; search-email always carries both exclusion clauses. No
-    // structured filter contributes here, so the FilterExpression
-    // contains exactly the two catalog guards.
-    expect(q.input.FilterExpression).toBe(
-      "NOT begins_with(internal_id, :draft_pfx) AND NOT begins_with(internal_id, :label_pfx)",
+    // partition. The exclusion now folds into the BETWEEN bounds on
+    // `internal_id` (DDB rejects FilterExpressions on the primary key);
+    // when no operator-driven structured filter is present the
+    // FilterExpression collapses to undefined.
+    expect(q.input.KeyConditionExpression).toMatch(
+      /internal_id BETWEEN :since AND :until/,
     );
-    expect(
-      JSON.stringify(q.input.ExpressionAttributeValues ?? {}),
-    ).not.toContain("invoice");
+    expect(q.input.FilterExpression).toBeUndefined();
+    const vals = q.input.ExpressionAttributeValues as Record<string, unknown>;
+    expect(vals[":since"]).toBe("0".repeat(26));
+    expect(vals[":until"]).toBe("7" + "Z".repeat(25));
+    expect(JSON.stringify(vals)).not.toContain("invoice");
   });
 
   it("structured filters (from/to/subject) push into FilterExpression with ExpressionAttributeNames for reserved words", async () => {
@@ -130,6 +133,33 @@ describe("DynamoMessageReader.searchEmail", () => {
     expect(Object.values(vals)).toEqual(
       expect.arrayContaining(["bob@example.com", "alice@acme.com", "Q2"]),
     );
+  });
+
+  it("does not reference internal_id inside FilterExpression (DDB rejects primary-key filters)", async () => {
+    // Same regression guard as listInbox: searchEmail used to push the
+    // DRAFT#/LABEL# exclusion into FilterExpression, which DDB rejects on
+    // primary key attributes. Both clauses now fold into the BETWEEN
+    // bounds on the KeyCondition.
+    const client = makeStubClient(async () => ({ Items: [], Count: 0 }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    await reader.searchEmail({
+      address: "alice@acme.com",
+      query: "invoice",
+      limit: 25,
+      cursor: null,
+      since: null,
+      until: null,
+      from: "bob@example.com",
+      to: null,
+      subject: null,
+    });
+    const q = client.send.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is QueryCommand => c instanceof QueryCommand)[0]!;
+    expect(q.input.FilterExpression ?? "").not.toMatch(/internal_id/);
   });
 
   it("pushes since+until into the KeyCondition as a BETWEEN over internal_id", async () => {

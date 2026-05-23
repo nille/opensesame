@@ -202,6 +202,29 @@ describe("DynamoMessageReader.listInbox", () => {
     expect(decoded).toEqual(lek);
   });
 
+  it("does not reference internal_id inside FilterExpression (DDB rejects primary-key filters)", async () => {
+    // Regression guard for the slice-8.17 bug: real DynamoDB returns
+    //   ValidationException: Filter Expression can only contain non-primary
+    //   key attributes: Primary key attribute: internal_id
+    // when `internal_id` (the range key) is referenced inside FilterExpression.
+    // Our v1 mock didn't enforce that rule, so the bug shipped silently.
+    // This assertion fails the moment the exclusion regresses back into a
+    // FilterExpression — even before the live DDB call would.
+    const client = makeStubClient(async () => ({ Items: [], Count: 0 }));
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    await reader.listInbox({
+      address: "alice@acme.com",
+      limit: 25,
+    });
+    const q = client.send.mock.calls
+      .map((c) => c[0])
+      .filter((c): c is QueryCommand => c instanceof QueryCommand)[0]!;
+    expect(q.input.FilterExpression ?? "").not.toMatch(/internal_id/);
+  });
+
   it("returns next_cursor=null when DDB has no more pages", async () => {
     const client = makeStubClient(async () => ({
       Items: [row()],
@@ -267,17 +290,19 @@ describe("DynamoMessageReader.listInbox", () => {
     const q = client.send.mock.calls
       .map((c) => c[0])
       .filter((c): c is QueryCommand => c instanceof QueryCommand)[0]!;
-    // The Query should constrain SK to "internal_id > :since_id" so DDB
-    // does the filtering (not us in app code).
-    expect(q.input.KeyConditionExpression).toMatch(/internal_id\s*>\s*:since/);
-    expect(q.input.ExpressionAttributeValues).toMatchObject({
-      ":addr": "alice@acme.com",
-    });
-    expect(
-      typeof (q.input.ExpressionAttributeValues as Record<string, unknown>)[
-        ":since"
-      ],
-    ).toBe("string");
+    // The Query should constrain SK with `internal_id BETWEEN :sk_lo AND
+    // :sk_hi` where :sk_lo is derived from `since` and :sk_hi is the
+    // ULID-max upper bound (`7Z…`) that excludes DRAFT#/LABEL# rows.
+    expect(q.input.KeyConditionExpression).toMatch(
+      /internal_id BETWEEN :sk_lo AND :sk_hi/,
+    );
+    const vals = q.input.ExpressionAttributeValues as Record<string, unknown>;
+    expect(vals[":addr"]).toBe("alice@acme.com");
+    expect(typeof vals[":sk_lo"]).toBe("string");
+    expect(vals[":sk_hi"]).toBe("7" + "Z".repeat(25));
+    // The lower bound encodes the `since` timestamp, so it sorts strictly
+    // above the canonical zero ULID.
+    expect((vals[":sk_lo"] as string) > "0".repeat(26)).toBe(true);
   });
 
   it("projects direction='in' when the row predates slice 3 (attribute absent)", async () => {

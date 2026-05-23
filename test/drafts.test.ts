@@ -727,7 +727,12 @@ describe("DynamoMessageReader.deleteDraft", () => {
 });
 
 describe("draft exclusion from inbox + search", () => {
-  it("listInbox carries NOT begins_with(internal_id, :draft_pfx) so drafts are filtered", async () => {
+  it("listInbox uses BETWEEN bounds to exclude DRAFT#/LABEL# rows from the key range", async () => {
+    // Earlier slices (8.17/8.19) used FilterExpression for this, but DDB
+    // rejects FilterExpressions on primary key attributes. The exclusion
+    // now lives in the KeyCondition: `internal_id BETWEEN :sk_lo AND :sk_hi`
+    // where the upper bound is the lex-max ULID (`7Z…`); DRAFT# (`D…`)
+    // and LABEL# (`L…`) sort outside that band.
     const queries: QueryCommand[] = [];
     const client = makeStubClient(async (cmd) => {
       if (cmd instanceof QueryCommand) {
@@ -747,13 +752,14 @@ describe("draft exclusion from inbox + search", () => {
       since: null,
     });
     const q = queries[0]!;
-    expect(String(q.input.FilterExpression)).toMatch(
-      /NOT begins_with\(internal_id, :draft_pfx\)/,
+    expect(q.input.FilterExpression).toBeUndefined();
+    expect(q.input.KeyConditionExpression).toMatch(
+      /internal_id BETWEEN :sk_lo AND :sk_hi/,
     );
-    expect(
-      (q.input.ExpressionAttributeValues as Record<string, unknown>)[
-        ":draft_pfx"
-      ],
-    ).toBe("DRAFT#");
+    const vals = q.input.ExpressionAttributeValues as Record<string, unknown>;
+    expect(vals[":sk_hi"]).toBe("7" + "Z".repeat(25));
+    // Sanity: DRAFT# and LABEL# both fall above the upper bound.
+    expect(("DRAFT#" > (vals[":sk_hi"] as string))).toBe(true);
+    expect(("LABEL#" > (vals[":sk_hi"] as string))).toBe(true);
   });
 });
