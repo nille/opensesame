@@ -469,13 +469,14 @@ export type StoredDraft = {
   updated_at: string;
 };
 
-// First save: omit draft_id (or pass null) and the server mints a ULID.
-// Subsequent saves: pass the minted draft_id; the server upserts the row.
+// First save: pass draft_id: null and the server mints a ULID. Subsequent
+// saves pass the minted draft_id; the server upserts the row. The schema
+// rejects an absent draft_id key — always include it explicitly.
 // Optional fields default to "absent" — pass null to explicitly clear, omit
 // to leave the prior value alone.
 export type SaveDraftInput = {
   address: string;
-  draft_id?: string | null;
+  draft_id: string | null;
   body_text: string;
   body_html?: string | null;
   to?: string | null;
@@ -637,10 +638,10 @@ export const bff = {
     }
     return { kind: "error", code, message };
   },
-  // ADR-0035 (slice 8.17). Persist a draft. First save omits draft_id;
-  // subsequent saves pass the minted id and the server upserts. A 404
-  // means the draft was deleted from another tab — UIs should drop the
-  // stale id and fall back to first-save on the next debounce.
+  // ADR-0035 (slice 8.17). Persist a draft. First save passes draft_id:
+  // null; subsequent saves pass the minted id and the server upserts. A
+  // 404 means the draft was deleted from another tab — UIs should drop
+  // the stale id and fall back to first-save on the next debounce.
   saveDraft(input: SaveDraftInput): Promise<RpcResult<SaveDraftResult>> {
     return call<SaveDraftResult>("save_draft", input);
   },

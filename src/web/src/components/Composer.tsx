@@ -293,11 +293,14 @@ export function Composer({
 
   const saveDraftNow = async (): Promise<void> => {
     setDraftStatus({ kind: "saving" });
+    // ADR-0035 (slice 8.17). draft_id MUST be present on the wire — null
+    // for first save so the server mints a ULID, string for upserts. An
+    // absent key is a 400 invalid_request.
     const input: SaveDraftInput = {
       address: from,
+      draft_id: draftId,
       body_text: bodyText,
     };
-    if (draftId !== null) input.draft_id = draftId;
     // ADR-0042 (slice 8.21). Persist HTML when the draft carries real
     // formatting; otherwise send null so a previously-formatted draft
     // that the operator stripped down to plain text doesn't quietly

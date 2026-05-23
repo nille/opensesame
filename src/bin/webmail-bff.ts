@@ -46,6 +46,7 @@ import {
 import { makeSesOutboundMailer } from "../aws/ses.js";
 import { makeHonoApp } from "../bff/hono-app.js";
 import { composeRawMime, type ComposeInput } from "../core/composer.js";
+import { makeUlidFactory } from "../core/ids.js";
 import { persistOutbound } from "../core/persist-outbound.js";
 import { sendWithAudit } from "../core/send-with-audit.js";
 import type { SendEmailInput } from "../bff/schemas.js";
@@ -94,12 +95,17 @@ function main(): void {
   }
 
   const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
+  // ADR-0035 (slice 8.17). saveDraft first-save (draft_id=null) needs a
+  // ULID factory to mint the new draft id; without it the reader throws
+  // and the BFF returns 500. The CLI drivers don't write drafts, so this
+  // dep is only required for the BFF.
   const reader = makeDynamoMessageReader({
     client: ddb,
     messagesTable,
     bodyChunksTable,
     messageIdGsiName,
     threadIdGsiName,
+    makeUlid: makeUlidFactory({ now: () => Date.now() }),
   });
   const auditLog = makeDynamoAuditLog({ client: ddb, auditTable });
   const sesClient = new SESv2Client({ region });
