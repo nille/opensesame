@@ -5,6 +5,7 @@ import {
   type ReplyToEmailRpcResult,
   type RpcResult,
   type SaveDraftInput,
+  type SendEmailAttachment,
   type SendEmailResult,
   type StoredDraft,
 } from "../lib/bff-client.ts";
@@ -29,6 +30,22 @@ export interface ComposerSeed {
 // fast typist's keystroke runs — long enough to skip mid-word writes, short
 // enough that a draft survives a tab close within ~1.5s of the last edit.
 const DRAFT_AUTOSAVE_DELAY_MS = 1500;
+
+// ADR-0040 (slice 8.19). Mirror of the BFF caps in src/bff/schemas.ts. Client
+// pre-validation only — the server enforces the same numbers as defense in
+// depth. Sizes are decoded bytes (the recipient never sees the base64
+// inflation).
+const MAX_ATTACHMENT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 20;
+
+interface ComposerAttachment {
+  id: string;
+  filename: string;
+  contentType: string;
+  contentBase64: string;
+  decodedSize: number;
+}
 
 // Parent context for reply mode (ADR-0022). When present, the composer
 // renders derived recipients/subject as read-only mono lines and routes
@@ -154,6 +171,22 @@ export function Composer({
   >(resumeDraft !== null && resumeDraft !== undefined
     ? { kind: "saved", at: resumeDraft.updated_at }
     : { kind: "idle" });
+
+  // ADR-0040 (slice 8.19). In-memory only — drafts don't persist
+  // attachments in v1. The chip strip carries a "not saved with draft"
+  // line so the operator isn't surprised on resume.
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const totalAttachmentBytes = useMemo(
+    () => attachments.reduce((acc, a) => acc + a.decodedSize, 0),
+    [attachments],
+  );
+  const overCap =
+    totalAttachmentBytes > MAX_ATTACHMENT_TOTAL_BYTES ||
+    attachments.length > MAX_ATTACHMENT_COUNT;
 
   // Reply mode previews — UI-side mirror of the server derivation. Cheap to
   // recompute and keeps the operator honest about what will be sent.
@@ -282,6 +315,83 @@ export function Composer({
     });
   };
 
+  // ADR-0040 (slice 8.19). Validate + add files via picker or drop. Each
+  // file is read as ArrayBuffer, base64-encoded, and appended to state.
+  // Per-file and total caps are checked client-side; the BFF re-checks.
+  const addFiles = async (files: File[]): Promise<void> => {
+    setAttachmentError(null);
+    let runningTotal = totalAttachmentBytes;
+    let runningCount = attachments.length;
+    const accepted: ComposerAttachment[] = [];
+    for (const f of files) {
+      if (runningCount >= MAX_ATTACHMENT_COUNT) {
+        setAttachmentError(
+          `attachment cap reached · max ${MAX_ATTACHMENT_COUNT} files`,
+        );
+        break;
+      }
+      if (f.size > MAX_ATTACHMENT_FILE_BYTES) {
+        setAttachmentError(
+          `${f.name}: ${formatBytes(f.size)} exceeds ${formatBytes(MAX_ATTACHMENT_FILE_BYTES)} per-file cap`,
+        );
+        continue;
+      }
+      if (runningTotal + f.size > MAX_ATTACHMENT_TOTAL_BYTES) {
+        setAttachmentError(
+          `${f.name}: would exceed ${formatBytes(MAX_ATTACHMENT_TOTAL_BYTES)} total cap`,
+        );
+        continue;
+      }
+      const buf = await f.arrayBuffer();
+      const base64 = encodeBase64(new Uint8Array(buf));
+      accepted.push({
+        id: `att-${Date.now()}-${runningCount}`,
+        filename: f.name,
+        contentType: f.type,
+        contentBase64: base64,
+        decodedSize: f.size,
+      });
+      runningTotal += f.size;
+      runningCount += 1;
+    }
+    if (accepted.length > 0) {
+      setAttachments((prev) => [...prev, ...accepted]);
+    }
+  };
+
+  const removeAttachment = (id: string): void => {
+    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachmentError(null);
+  };
+
+  const onPickFiles = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ): Promise<void> => {
+    const list = e.target.files;
+    if (list === null || list.length === 0) return;
+    await addFiles(Array.from(list));
+    // Reset so the same file can be re-selected after a removal.
+    e.target.value = "";
+  };
+
+  const onDragOver = (e: React.DragEvent<HTMLElement>): void => {
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault();
+      setIsDragging(true);
+    }
+  };
+  const onDragLeave = (e: React.DragEvent<HTMLElement>): void => {
+    if (e.currentTarget === e.target) setIsDragging(false);
+  };
+  const onDrop = async (
+    e: React.DragEvent<HTMLElement>,
+  ): Promise<void> => {
+    e.preventDefault();
+    setIsDragging(false);
+    const dropped = Array.from(e.dataTransfer.files);
+    if (dropped.length > 0) await addFiles(dropped);
+  };
+
   const send = (): Promise<void> => sendInternal({ archive: false });
 
   // ADR-0038 (slice 8.17). Sends the reply (or new compose) and, when
@@ -381,6 +491,13 @@ export function Composer({
     if (seed?.references && seed.references.length > 0) {
       input.references = seed.references.split(/\s+/).filter((s) => s.length > 0);
     }
+    if (attachments.length > 0) {
+      input.attachments = attachments.map<SendEmailAttachment>((a) => ({
+        filename: a.filename,
+        content_type: a.contentType,
+        content_base64: a.contentBase64,
+      }));
+    }
 
     const result: RpcResult<SendEmailResult> = await bff.sendEmail(input);
     if (result.kind === "ok") {
@@ -416,8 +533,17 @@ export function Composer({
 
   const fromAddress = parent !== null ? parent.address : from;
 
+  const showAttachUi = !replyMode;
+
   return (
-    <section className="composer">
+    <section
+      className={
+        "composer" + (isDragging && showAttachUi ? " composer--drag" : "")
+      }
+      onDragOver={showAttachUi ? onDragOver : undefined}
+      onDragLeave={showAttachUi ? onDragLeave : undefined}
+      onDrop={showAttachUi ? (e) => void onDrop(e) : undefined}
+    >
       <header className="composer__head">
         <div className="composer__title mono faint">
           {replyMode
@@ -511,6 +637,70 @@ export function Composer({
         spellCheck
       />
 
+      {showAttachUi ? (
+        <div className="composer__attach">
+          <div className="composer__attach-row">
+            <button
+              className="btn btn--quiet"
+              onClick={() => fileInputRef.current?.click()}
+              type="button"
+            >
+              <span>Attach</span>
+            </button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => void onPickFiles(e)}
+            />
+            <span
+              className={
+                "composer__attach-meter mono faint" +
+                (overCap ? " composer__attach-meter--over" : "") +
+                (totalAttachmentBytes / MAX_ATTACHMENT_TOTAL_BYTES > 0.8 &&
+                !overCap
+                  ? " composer__attach-meter--warn"
+                  : "")
+              }
+            >
+              {formatBytes(totalAttachmentBytes)} / {formatBytes(MAX_ATTACHMENT_TOTAL_BYTES)}
+              {" · "}
+              {attachments.length} / {MAX_ATTACHMENT_COUNT} files
+            </span>
+            {draftsEnabled && attachments.length > 0 ? (
+              <span className="composer__attach-note mono faint">
+                · not saved with draft
+              </span>
+            ) : null}
+          </div>
+          {attachments.length > 0 ? (
+            <ul className="composer__chips">
+              {attachments.map((a) => (
+                <li key={a.id} className="composer__chip mono">
+                  <span className="composer__chip-name">{a.filename}</span>
+                  <span className="composer__chip-size faint">
+                    {" · "}
+                    {formatBytes(a.decodedSize)}
+                  </span>
+                  <button
+                    className="composer__chip-x"
+                    onClick={() => removeAttachment(a.id)}
+                    aria-label={`Remove ${a.filename}`}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {attachmentError !== null ? (
+            <div className="composer__attach-error mono">{attachmentError}</div>
+          ) : null}
+        </div>
+      ) : null}
+
       {parent !== null ? (
         <pre className="composer__quote mono faint">
           {previewQuotedBody({
@@ -556,7 +746,7 @@ export function Composer({
           <button
             className="btn btn--primary"
             onClick={() => void send()}
-            disabled={status.kind === "sending"}
+            disabled={status.kind === "sending" || overCap}
           >
             <span>
               {status.kind === "sending"
@@ -646,4 +836,27 @@ function formatSavedAt(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   const pad = (n: number): string => (n < 10 ? "0" + n : String(n));
   return pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+
+// ADR-0040 (slice 8.19). Human-readable byte count for the size readout
+// and chip strip. KB / MB only — files smaller than 1KB show as `< 1 KB`
+// to avoid the "0 KB" footgun on near-empty files.
+function formatBytes(n: number): string {
+  if (n === 0) return "0 KB";
+  if (n < 1024) return "< 1 KB";
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Browser base64 encoder for Uint8Array. btoa() takes a binary string so we
+// build one chunk-by-chunk to avoid the call-stack limit on String.fromCharCode
+// when spreading large arrays.
+function encodeBase64(bytes: Uint8Array): string {
+  const CHUNK = 0x8000;
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    const slice = bytes.subarray(i, i + CHUNK);
+    bin += String.fromCharCode.apply(null, Array.from(slice));
+  }
+  return btoa(bin);
 }

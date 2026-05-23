@@ -188,6 +188,104 @@ describe("parseSendEmailInput", () => {
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.field).toBe("references");
   });
+
+  // ADR-0040 (slice 8.19) — outbound attachments. Caps mirrored client-side
+  // in Composer.tsx; the server is the authoritative gate.
+  it("accepts a valid attachments[] entry", () => {
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: [
+        {
+          filename: "note.txt",
+          content_type: "text/plain",
+          content_base64: "SGkh", // "Hi!"
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok && r.value.attachments !== undefined) {
+      expect(r.value.attachments).toHaveLength(1);
+      expect(r.value.attachments[0]?.filename).toBe("note.txt");
+    }
+  });
+
+  it("rejects attachments that is not an array", () => {
+    const r = parseSendEmailInput({ ...minimal, attachments: "no" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects more than 20 attachments", () => {
+    const att = {
+      filename: "a.txt",
+      content_type: "text/plain",
+      content_base64: "QQ==",
+    };
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: Array.from({ length: 21 }, () => att),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects an attachment item missing filename", () => {
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: [{ content_type: "text/plain", content_base64: "QQ==" }],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects malformed base64", () => {
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: [
+        {
+          filename: "x.bin",
+          content_type: "application/octet-stream",
+          content_base64: "!!!not-base64!!!",
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects an attachment that exceeds the 10MB per-file cap", () => {
+    // 11MB of zero bytes encoded as base64 (a single 'A' encodes one
+    // null byte; AAAA encodes three). Just build a string longer than
+    // ceil(10MB * 4/3) so decodedBase64Length flags it.
+    const oneFifty = "A".repeat(15_000_000); // ~11.25MB decoded
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: [
+        {
+          filename: "big.bin",
+          content_type: "application/octet-stream",
+          content_base64: oneFifty,
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects when total decoded size exceeds the 25MB cap", () => {
+    // Three 9MB files = 27MB total; each fits under the 10MB per-file cap.
+    const nineMb = "A".repeat(12_000_000); // ~9MB decoded
+    const r = parseSendEmailInput({
+      ...minimal,
+      attachments: [
+        { filename: "a", content_type: "text/plain", content_base64: nineMb },
+        { filename: "b", content_type: "text/plain", content_base64: nineMb },
+        { filename: "c", content_type: "text/plain", content_base64: nineMb },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
 });
 
 describe("parseSearchEmailInput", () => {

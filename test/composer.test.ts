@@ -203,4 +203,195 @@ describe("composeRawMime", () => {
       "d@example.com",
     ]);
   });
+
+  // ADR-0040 (slice 8.19) — outbound attachments. Body is wrapped in
+  // multipart/mixed; each attachment becomes a base64 part with both
+  // Content-Type and Content-Disposition carrying the filename.
+
+  it("wraps text-only body + attachment in multipart/mixed", () => {
+    const bytes = new Uint8Array([0x48, 0x69, 0x21]); // "Hi!"
+    const { raw } = composeRawMime(
+      baseInput({
+        attachments: [
+          { filename: "note.txt", contentType: "text/plain", contentBytes: bytes },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    expect(text).toMatch(
+      /Content-Type: multipart\/mixed; boundary="[^"]+"\r\n/,
+    );
+    // Body part: text/plain quoted-printable.
+    expect(text).toContain('Content-Type: text/plain; charset="utf-8"');
+    // Attachment part: declared content-type + base64 body.
+    expect(text).toContain('Content-Type: text/plain; name="note.txt"');
+    expect(text).toContain('Content-Disposition: attachment; filename="note.txt"');
+    expect(text).toContain("Content-Transfer-Encoding: base64");
+    // base64("Hi!") = "SGkh"
+    expect(text).toContain("SGkh");
+    // Body part comes before the attachment part.
+    const bodyIdx = text.indexOf("Hi there");
+    const attIdx = text.indexOf("SGkh");
+    expect(bodyIdx).toBeGreaterThan(0);
+    expect(attIdx).toBeGreaterThan(bodyIdx);
+  });
+
+  it("nests multipart/alternative inside multipart/mixed when html + attachment", () => {
+    const bytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]); // JPEG SOI marker
+    const { raw } = composeRawMime(
+      baseInput({
+        bodyText: "plain",
+        bodyHtml: "<p>html</p>",
+        attachments: [
+          {
+            filename: "pic.jpg",
+            contentType: "image/jpeg",
+            contentBytes: bytes,
+          },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    // Outer envelope is multipart/mixed.
+    expect(text).toMatch(
+      /Content-Type: multipart\/mixed; boundary="[^"]+"\r\n/,
+    );
+    // Inner alternative for body.
+    expect(text).toMatch(/Content-Type: multipart\/alternative; boundary="[^"]+"/);
+    // Attachment is image/jpeg with the filename on both headers.
+    expect(text).toContain('Content-Type: image/jpeg; name="pic.jpg"');
+    expect(text).toContain(
+      'Content-Disposition: attachment; filename="pic.jpg"',
+    );
+    // Order: text → html → attachment.
+    const plainIdx = text.indexOf("text/plain");
+    const htmlIdx = text.indexOf("text/html");
+    const jpgIdx = text.indexOf("image/jpeg");
+    expect(plainIdx).toBeGreaterThan(0);
+    expect(htmlIdx).toBeGreaterThan(plainIdx);
+    expect(jpgIdx).toBeGreaterThan(htmlIdx);
+  });
+
+  it("emits multiple attachments each as their own part", () => {
+    const a = new Uint8Array([0x41]); // "A"
+    const b = new Uint8Array([0x42, 0x43]); // "BC"
+    const { raw } = composeRawMime(
+      baseInput({
+        attachments: [
+          { filename: "a.txt", contentType: "text/plain", contentBytes: a },
+          { filename: "b.txt", contentType: "text/plain", contentBytes: b },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    expect(text).toContain('name="a.txt"');
+    expect(text).toContain('name="b.txt"');
+    expect(text).toContain("QQ=="); // base64("A")
+    expect(text).toContain("QkM="); // base64("BC")
+  });
+
+  it("folds long base64 attachment payload at 76 columns", () => {
+    // 200 bytes → 268 base64 chars → 4 folded lines (76+76+76+40).
+    const bytes = new Uint8Array(200).fill(0x61); // "aaaa…"
+    const { raw } = composeRawMime(
+      baseInput({
+        attachments: [
+          {
+            filename: "long.bin",
+            contentType: "application/octet-stream",
+            contentBytes: bytes,
+          },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    // After the empty separator line, the first base64 line must be ≤ 76
+    // chars before the next CRLF.
+    const idx = text.indexOf("Content-Transfer-Encoding: base64");
+    const tail = text.slice(idx);
+    const blank = tail.indexOf("\r\n\r\n");
+    const after = tail.slice(blank + 4);
+    const firstLine = after.split("\r\n")[0]!;
+    expect(firstLine.length).toBeLessThanOrEqual(76);
+    expect(firstLine.length).toBeGreaterThan(0);
+  });
+
+  it("RFC 5987 encodes a non-ASCII filename on Content-Disposition", () => {
+    const bytes = new Uint8Array([0x44]); // "D"
+    const { raw } = composeRawMime(
+      baseInput({
+        attachments: [
+          {
+            filename: "räksmörgås.txt",
+            contentType: "text/plain",
+            contentBytes: bytes,
+          },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    // Content-Disposition uses filename*=UTF-8''… for non-ASCII.
+    expect(text).toMatch(
+      /Content-Disposition: attachment; filename\*=UTF-8''r%C3%A4ksm%C3%B6rg%C3%A5s\.txt/,
+    );
+    // Content-Type;name= uses RFC 2047 encoded-word.
+    expect(text).toMatch(
+      /Content-Type: text\/plain; name="=\?utf-8\?B\?[A-Za-z0-9+/=]+\?="/,
+    );
+  });
+
+  it("falls back to application/octet-stream when contentType is empty", () => {
+    const bytes = new Uint8Array([0x45]);
+    const { raw } = composeRawMime(
+      baseInput({
+        attachments: [
+          { filename: "x.bin", contentType: "", contentBytes: bytes },
+        ],
+      }),
+      { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+    );
+    const text = decode(raw);
+    expect(text).toContain('Content-Type: application/octet-stream; name="x.bin"');
+  });
+
+  it("rejects a filename containing CRLF (header injection guard)", () => {
+    const bytes = new Uint8Array([0x46]);
+    expect(() =>
+      composeRawMime(
+        baseInput({
+          attachments: [
+            {
+              filename: "ok.txt\r\nBcc: leaked@example.com",
+              contentType: "text/plain",
+              contentBytes: bytes,
+            },
+          ],
+        }),
+        { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+      ),
+    ).toThrow(/filename/);
+  });
+
+  it("rejects a contentType containing a NUL byte", () => {
+    const bytes = new Uint8Array([0x47]);
+    expect(() =>
+      composeRawMime(
+        baseInput({
+          attachments: [
+            {
+              filename: "ok.txt",
+              contentType: "text/plain ",
+              contentBytes: bytes,
+            },
+          ],
+        }),
+        { now: () => FIXED_NOW, randomBytes: FIXED_RANDOM },
+      ),
+    ).toThrow(/contentType/);
+  });
 });

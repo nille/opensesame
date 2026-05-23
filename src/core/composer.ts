@@ -14,8 +14,16 @@ import { encodeUlid } from "./ids.js";
 //   - quoted-printable transfer encoding so 7-bit-clean wire bytes hold any
 //     UTF-8 payload without further escaping.
 //   - In-Reply-To / References for threaded replies.
-//   - Attachments deferred to a follow-up slice (composer + parser already
-//     have the type seam, but the writer doesn't persist them yet).
+//   - Attachments (ADR-0040, slice 8.19): when present, the body is wrapped
+//     in multipart/mixed — one body part (text or multipart/alternative) +
+//     one part per attachment. Attachment bytes are re-emitted as base64
+//     with 76-column line folding.
+
+export type ComposeAttachment = {
+  filename: string;
+  contentType: string;
+  contentBytes: Uint8Array;
+};
 
 export type ComposeInput = {
   from: string;
@@ -27,6 +35,7 @@ export type ComposeInput = {
   bodyHtml?: string;
   inReplyTo?: string;
   references?: string[];
+  attachments?: ComposeAttachment[];
 };
 
 export type ComposeDeps = {
@@ -101,6 +110,67 @@ export function composeRawMime(
 function renderBody(input: ComposeInput, headers: string[]): string {
   const hasHtml =
     input.bodyHtml !== undefined && input.bodyHtml.length > 0;
+  const hasAttachments =
+    input.attachments !== undefined && input.attachments.length > 0;
+
+  if (hasAttachments) {
+    // ADR-0040: validate filename + content_type up front so the wire
+    // never carries header injection. Defense at the composer boundary;
+    // the BFF dispatcher does its own size cap check.
+    for (const att of input.attachments!) {
+      assertHeaderSafe("attachment filename", att.filename);
+      assertHeaderSafe("attachment contentType", att.contentType);
+    }
+
+    const outerBoundary = makeBoundary();
+    headers.push(
+      `Content-Type: multipart/mixed; boundary="${outerBoundary}"`,
+    );
+
+    const parts: string[] = [];
+    // First part is the body — either a single text/plain or a nested
+    // multipart/alternative with text + html.
+    parts.push(`--${outerBoundary}`);
+    if (!hasHtml) {
+      parts.push('Content-Type: text/plain; charset="utf-8"');
+      parts.push("Content-Transfer-Encoding: quoted-printable");
+      parts.push("");
+      parts.push(encodeQuotedPrintable(input.bodyText));
+    } else {
+      const innerBoundary = makeBoundary();
+      parts.push(
+        `Content-Type: multipart/alternative; boundary="${innerBoundary}"`,
+      );
+      parts.push("");
+      parts.push(`--${innerBoundary}`);
+      parts.push('Content-Type: text/plain; charset="utf-8"');
+      parts.push("Content-Transfer-Encoding: quoted-printable");
+      parts.push("");
+      parts.push(encodeQuotedPrintable(input.bodyText));
+      parts.push(`--${innerBoundary}`);
+      parts.push('Content-Type: text/html; charset="utf-8"');
+      parts.push("Content-Transfer-Encoding: quoted-printable");
+      parts.push("");
+      parts.push(encodeQuotedPrintable(input.bodyHtml as string));
+      parts.push(`--${innerBoundary}--`);
+    }
+
+    for (const att of input.attachments!) {
+      parts.push(`--${outerBoundary}`);
+      const ct = att.contentType.length === 0
+        ? "application/octet-stream"
+        : att.contentType;
+      const ctName = encodeRfc2047IfNeeded(att.filename);
+      const dispName = encodeContentDispositionFilename(att.filename);
+      parts.push(`Content-Type: ${ct}; name="${ctName}"`);
+      parts.push(`Content-Disposition: attachment; ${dispName}`);
+      parts.push("Content-Transfer-Encoding: base64");
+      parts.push("");
+      parts.push(foldBase64(att.contentBytes));
+    }
+    parts.push(`--${outerBoundary}--`);
+    return parts.join(CRLF);
+  }
 
   if (!hasHtml) {
     headers.push('Content-Type: text/plain; charset="utf-8"');
@@ -129,6 +199,75 @@ function renderBody(input: ComposeInput, headers: string[]): string {
   parts.push(encodeQuotedPrintable(input.bodyHtml as string));
   parts.push(`--${boundary}--`);
   return parts.join(CRLF);
+}
+
+function assertHeaderSafe(label: string, value: string): void {
+  // RFC 5322 forbids CR / LF in header values; NUL is never sane.
+  // Throwing here turns a malicious filename into a 500 instead of a
+  // forged header on the wire.
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c === 0x0a || c === 0x0d || c === 0x00) {
+      throw new Error(`composeRawMime: ${label} contains forbidden control byte`);
+    }
+  }
+}
+
+function encodeRfc2047IfNeeded(s: string): string {
+  // For Content-Type;name= we use the same encoded-word shape as Subject.
+  // Quotes inside the filename are escaped with backslash so the
+  // surrounding quoted-string stays valid.
+  if (isAscii(s)) return s.replace(/(["\\])/g, "\\$1");
+  return encodeWordBase64(s);
+}
+
+function encodeContentDispositionFilename(s: string): string {
+  // RFC 5987-encoded filename for non-ASCII; quoted-string for ASCII.
+  // Always emit both forms when non-ASCII so single-format MUAs still find
+  // a name they can parse.
+  if (isAscii(s)) {
+    return `filename="${s.replace(/(["\\])/g, "\\$1")}"`;
+  }
+  const utf8 = new TextEncoder().encode(s);
+  let pct = "";
+  for (let i = 0; i < utf8.length; i++) {
+    const b = utf8[i]!;
+    // attr-char from RFC 5987: ALPHA / DIGIT / !#$&+-.^_`|~
+    const isAttr =
+      (b >= 0x30 && b <= 0x39) || // 0-9
+      (b >= 0x41 && b <= 0x5a) || // A-Z
+      (b >= 0x61 && b <= 0x7a) || // a-z
+      b === 0x21 ||
+      b === 0x23 ||
+      b === 0x24 ||
+      b === 0x26 ||
+      b === 0x2b ||
+      b === 0x2d ||
+      b === 0x2e ||
+      b === 0x5e ||
+      b === 0x5f ||
+      b === 0x60 ||
+      b === 0x7c ||
+      b === 0x7e;
+    if (isAttr) {
+      pct += String.fromCharCode(b);
+    } else {
+      pct += `%${QP_HEX[(b >> 4) & 0x0f]!}${QP_HEX[b & 0x0f]!}`;
+    }
+  }
+  return `filename*=UTF-8''${pct}`;
+}
+
+function foldBase64(bytes: Uint8Array): string {
+  // Base64-encode then fold at 76 columns per RFC 2045 §6.8.
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  const b64 = btoa(bin);
+  const lines: string[] = [];
+  for (let i = 0; i < b64.length; i += 76) {
+    lines.push(b64.slice(i, i + 76));
+  }
+  return lines.join(CRLF);
 }
 
 type Mailbox = {

@@ -114,6 +114,16 @@ function main(): void {
     if (input.body_html !== undefined) compose.bodyHtml = input.body_html;
     if (input.in_reply_to !== undefined) compose.inReplyTo = input.in_reply_to;
     if (input.references !== undefined) compose.references = input.references;
+    if (input.attachments !== undefined && input.attachments.length > 0) {
+      // Schema parser already enforced size + count caps; here we just
+      // decode the base64 to bytes for the composer's multipart/mixed
+      // assembly.
+      compose.attachments = input.attachments.map((a) => ({
+        filename: a.filename,
+        contentType: a.content_type,
+        contentBytes: decodeBase64(a.content_base64),
+      }));
+    }
 
     const composed = composeRawMime(compose, { now: () => new Date() });
 
@@ -218,6 +228,14 @@ function main(): void {
       ].join("\n"),
     );
   });
+}
+
+function decodeBase64(s: string): Uint8Array {
+  // Strip any folding whitespace tolerated by the schema parser, then
+  // decode via Node's Buffer.from('…', 'base64'). Allocates once per
+  // attachment; the parser already capped total bytes.
+  const stripped = s.replace(/[\r\n\t ]/g, "");
+  return new Uint8Array(Buffer.from(stripped, "base64"));
 }
 
 main();

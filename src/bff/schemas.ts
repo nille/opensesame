@@ -294,6 +294,20 @@ export function parseSearchEmailInput(
 
 // ---- send_email ----
 
+// ADR-0040 (slice 8.19). Inline base64 attachment shape on the wire.
+// Caps live in the parser: 10MB per file, 25MB total decoded, 20 files
+// max — same envelope SES accepts on SendRawEmail with margin for
+// headers + boundaries + base64 inflation.
+export type SendEmailAttachment = {
+  filename: string;
+  content_type: string;
+  content_base64: string;
+};
+
+const MAX_ATTACHMENT_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 20;
+
 export type SendEmailInput = {
   from: string;
   to: string[];
@@ -304,6 +318,7 @@ export type SendEmailInput = {
   body_html?: string;
   in_reply_to?: string;
   references?: string[];
+  attachments?: SendEmailAttachment[];
 };
 
 export function parseSendEmailInput(
@@ -392,7 +407,116 @@ export function parseSendEmailInput(
     out.references = refs;
   }
 
+  if (obj["attachments"] !== undefined) {
+    const raw = obj["attachments"];
+    if (!Array.isArray(raw)) {
+      return fail(
+        "attachments",
+        "invalid_type",
+        "attachments must be an array",
+      );
+    }
+    if (raw.length > MAX_ATTACHMENT_COUNT) {
+      return fail(
+        "attachments",
+        "invalid_value",
+        `attachments count exceeds ${MAX_ATTACHMENT_COUNT}`,
+      );
+    }
+    const parsed: SendEmailAttachment[] = [];
+    let totalDecoded = 0;
+    for (let i = 0; i < raw.length; i++) {
+      const a = raw[i];
+      const item = expectObject(a);
+      if (item === null) {
+        return fail(
+          "attachments",
+          "invalid_type",
+          `attachments[${i}] must be an object`,
+        );
+      }
+      const filename = expectString(item["filename"]);
+      if (filename === null || filename.length === 0) {
+        return fail(
+          "attachments",
+          "missing",
+          `attachments[${i}].filename is required`,
+        );
+      }
+      const content_type = expectString(item["content_type"]);
+      if (content_type === null) {
+        return fail(
+          "attachments",
+          "invalid_type",
+          `attachments[${i}].content_type must be a string`,
+        );
+      }
+      const content_base64 = expectString(item["content_base64"]);
+      if (content_base64 === null) {
+        return fail(
+          "attachments",
+          "invalid_type",
+          `attachments[${i}].content_base64 must be a string`,
+        );
+      }
+      const decodedLen = decodedBase64Length(content_base64);
+      if (decodedLen === null) {
+        return fail(
+          "attachments",
+          "invalid_value",
+          `attachments[${i}].content_base64 is not valid base64`,
+        );
+      }
+      if (decodedLen > MAX_ATTACHMENT_FILE_BYTES) {
+        return fail(
+          "attachments",
+          "invalid_value",
+          `attachments[${i}] exceeds per-file cap of ${MAX_ATTACHMENT_FILE_BYTES} bytes`,
+        );
+      }
+      totalDecoded += decodedLen;
+      if (totalDecoded > MAX_ATTACHMENT_TOTAL_BYTES) {
+        return fail(
+          "attachments",
+          "invalid_value",
+          `attachments total exceeds ${MAX_ATTACHMENT_TOTAL_BYTES} bytes`,
+        );
+      }
+      parsed.push({ filename, content_type, content_base64 });
+    }
+    if (parsed.length > 0) {
+      out.attachments = parsed;
+    }
+  }
+
   return ok(out);
+}
+
+// Length of bytes a base64 string would decode to, or null if the string
+// is malformed. Avoids actually allocating the buffer — we just count
+// chars and pads.
+function decodedBase64Length(s: string): number | null {
+  // Strip optional CRLF/whitespace folding so a folded base64 string still
+  // validates (the wire shape doesn't require folding, but tolerate it).
+  let len = 0;
+  let pad = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 0x0a || c === 0x0d || c === 0x20 || c === 0x09) continue;
+    const isB64 =
+      (c >= 0x41 && c <= 0x5a) || // A-Z
+      (c >= 0x61 && c <= 0x7a) || // a-z
+      (c >= 0x30 && c <= 0x39) || // 0-9
+      c === 0x2b || // +
+      c === 0x2f; // /
+    const isPad = c === 0x3d;
+    if (!isB64 && !isPad) return null;
+    if (isPad) pad += 1;
+    len += 1;
+  }
+  if (len % 4 !== 0) return null;
+  if (pad > 2) return null;
+  return Math.floor((len / 4) * 3) - pad;
 }
 
 // ---- reply_to_email ----

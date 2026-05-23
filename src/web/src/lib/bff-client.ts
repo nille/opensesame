@@ -407,6 +407,12 @@ export type ReadMessageFailed = {
 
 export type ReadMessage = ReadMessageOk | ReadMessageFailed;
 
+export type SendEmailAttachment = {
+  filename: string;
+  content_type: string;
+  content_base64: string;
+};
+
 export type SendEmailInput = {
   from: string;
   to: string[];
@@ -417,6 +423,10 @@ export type SendEmailInput = {
   body_html?: string;
   in_reply_to?: string;
   references?: string[];
+  // ADR-0040 (slice 8.19). Inline base64 attachments. Caller-supplied
+  // base64; the composer re-emits as base64 with 76-col line folding.
+  // BFF caps: 10MB per file, 25MB total decoded, 20 files max.
+  attachments?: SendEmailAttachment[];
 };
 
 export type SendEmailResult = {
