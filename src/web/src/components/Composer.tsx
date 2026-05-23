@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import {
   bff,
+  type DraftAttachmentRef,
   type ReadMessageHeaders,
   type ReplyToEmailRpcResult,
   type RpcResult,
@@ -40,13 +41,29 @@ const MAX_ATTACHMENT_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_TOTAL_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENT_COUNT = 20;
 
-interface ComposerAttachment {
-  id: string;
-  filename: string;
-  contentType: string;
-  contentBase64: string;
-  decodedSize: number;
-}
+// ADR-0040 in-memory attachment (never staged): bytes live in `contentBase64`.
+// ADR-0043 staged attachment: bytes live in S3 under `s3Key`; the chip strip
+// holds the metadata. On send the composer hydrates `s3Key` chips back to
+// `contentBase64` via `get_staged_attachment` and re-emits as send_email
+// attachments.
+type ComposerAttachment =
+  | {
+      kind: "inline";
+      id: string;
+      filename: string;
+      contentType: string;
+      contentBase64: string;
+      decodedSize: number;
+    }
+  | {
+      kind: "staged";
+      id: string;
+      filename: string;
+      contentType: string;
+      decodedSize: number;
+      sha256: string;
+      s3Key: string;
+    };
 
 // Parent context for reply mode (ADR-0022). When present, the composer
 // renders derived recipients/subject as read-only mono lines and routes
@@ -168,6 +185,12 @@ export function Composer({
   const [draftId, setDraftId] = useState<string | null>(
     resumeDraft?.draft_id ?? null,
   );
+  // Mirror of draftId for the rare case addFiles needs the freshly-minted
+  // id within the same async tick (setState is queued for the next render).
+  const draftIdRef = useRef<string | null>(resumeDraft?.draft_id ?? null);
+  useEffect(() => {
+    draftIdRef.current = draftId;
+  }, [draftId]);
   // Saving spinner state. Kept tiny — the footer renders "saved · HH:MM"
   // when idle and "saving…" while in flight. Don't conflate with `status`
   // (which is for send-time errors only).
@@ -180,12 +203,42 @@ export function Composer({
     ? { kind: "saved", at: resumeDraft.updated_at }
     : { kind: "idle" });
 
-  // ADR-0040 (slice 8.19). In-memory only — drafts don't persist
-  // attachments in v1. The chip strip carries a "not saved with draft"
-  // line so the operator isn't surprised on resume.
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  // ADR-0043 (slice 8.22). When resuming a draft, hydrate the chip strip
+  // from the persisted refs so the operator sees the same attachments
+  // they saved. Inline-only fallback (kind: "inline") still works for
+  // fresh-compose with no draft id; staging kicks in once the first
+  // save mints a draft_id.
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() =>
+    (resumeDraft?.attachments ?? []).map((ref) => ({
+      kind: "staged" as const,
+      id: ref.s3_key,
+      filename: ref.filename,
+      contentType: ref.content_type,
+      decodedSize: ref.size,
+      sha256: ref.sha256,
+      s3Key: ref.s3_key,
+    })),
+  );
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isStaging, setIsStaging] = useState(false);
+  // ADR-0043 (slice 8.22). The autosave path must distinguish "user has not
+  // touched attachments yet on this composer instance" from "user emptied
+  // the chip strip". Resuming a draft hydrates `attachments` from the row
+  // but should NOT cause the next autosave to overwrite that row's refs
+  // with [] when, e.g., TanStack's cached list_drafts response was stale.
+  // addFiles + removeAttachment flip this; saveDraftNow only includes
+  // `attachments` in the upsert when true (or when an explicit override
+  // is passed from the staging path).
+  const attachmentsTouchedRef = useRef(false);
+  // Live mirror of `attachments`. The Esc keydown listener and the autosave
+  // useEffect intentionally don't list `attachments` in their dep arrays
+  // (we don't want to re-register the listener on every chip change), which
+  // means their closure captures a stale snapshot of `attachments`. Reading
+  // through this ref inside saveDraftNow gives us the latest list at call
+  // time — without it, an Esc-after-staging triggers the stale closure
+  // (attachments=[], touchedRef=true) and clobbers the row's persisted refs.
+  const attachmentsRef = useRef<ComposerAttachment[]>(attachments);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const totalAttachmentBytes = useMemo(
@@ -272,6 +325,48 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [to, cc, subject, bodyText, seed, parent, replyAll]);
 
+  // ADR-0043 (slice 8.22). On resume, the StoredDraft passed in may come
+  // from a stale TanStack cache (drafts list has 60s staleTime) — the
+  // attachments[] could be missing the most recent staging that happened
+  // in another tab or just before the cache invalidated. Re-fetch the
+  // row once on mount so the chip strip reflects the durable state, not
+  // the stale snapshot. We only sync into state if the user hasn't
+  // already touched chips on this mount, and only when we get a strict
+  // superset/different ref set than what was hydrated from the prop.
+  const resumedDraftId = resumeDraft?.draft_id ?? null;
+  const resumedAddress = resumeDraft?.address ?? null;
+  useEffect(() => {
+    if (resumedDraftId === null || resumedAddress === null) return;
+    let cancelled = false;
+    void (async () => {
+      const r = await bff.getDraft({
+        address: resumedAddress,
+        draft_id: resumedDraftId,
+      });
+      if (cancelled) return;
+      if (r.kind !== "ok") return;
+      if (attachmentsTouchedRef.current) return;
+      const live = r.value.attachments.map<ComposerAttachment>((ref) => ({
+        kind: "staged" as const,
+        id: ref.s3_key,
+        filename: ref.filename,
+        contentType: ref.content_type,
+        decodedSize: ref.size,
+        sha256: ref.sha256,
+        s3Key: ref.s3_key,
+      }));
+      setAttachments(live);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Run once per mount per resumed draft.
+  }, [resumedDraftId, resumedAddress]);
+
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
   // ADR-0035 (slice 8.17) + ADR-0042 (slice 8.21). Debounced auto-save.
   // Fires 1500ms after the last edit when the buffer has any content.
   // The first save mints a ULID and stamps draftId; subsequent saves
@@ -291,7 +386,13 @@ export function Composer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [to, cc, subject, bodyText, bodyHtml, draftsEnabled]);
 
-  const saveDraftNow = async (): Promise<void> => {
+  // Optional `attachmentsOverride` lets addFiles pass the post-staging
+  // chip list explicitly — `attachments` from the closure is stale until
+  // the next render, so the auto-save inside addFiles would otherwise
+  // persist the pre-stage view of the world.
+  const saveDraftNow = async (
+    attachmentsOverride?: ComposerAttachment[],
+  ): Promise<void> => {
     setDraftStatus({ kind: "saving" });
     // ADR-0035 (slice 8.17). draft_id MUST be present on the wire — null
     // for first save so the server mints a ULID, string for upserts. An
@@ -314,8 +415,45 @@ export function Composer({
     if (to.length > 0) input.to = to;
     if (cc.length > 0) input.cc = cc;
     if (subject.length > 0) input.subject = subject;
+    // ADR-0043 (slice 8.22). Persist staged-attachment refs on every save
+    // once the draft has at least one (so removing the last chip clears
+    // the row). Drafts with only kind:"inline" attachments — possible on
+    // a fresh compose between staging attempts — leave attachments off so
+    // the autosave doesn't clear out previously-staged refs the row still
+    // holds.
+    const sourceAttachments = attachmentsOverride ?? attachmentsRef.current;
+    const stagedRefs = sourceAttachments.flatMap<DraftAttachmentRef>((a) =>
+      a.kind === "staged"
+        ? [
+            {
+              filename: a.filename,
+              content_type: a.contentType,
+              size: a.decodedSize,
+              sha256: a.sha256,
+              s3_key: a.s3Key,
+            },
+          ]
+        : [],
+    );
+    const allStagedOrEmpty = sourceAttachments.every(
+      (a) => a.kind === "staged",
+    );
+    // Include attachments in the upsert only when:
+    //  (a) addFiles passed an explicit override (post-staging path), or
+    //  (b) the user has touched the chip strip on this composer mount.
+    // Otherwise, omit so the row's persisted refs survive autosaves
+    // triggered purely by typing on a resumed draft.
+    const shouldPersistAttachments =
+      attachmentsOverride !== undefined || attachmentsTouchedRef.current;
+    if (shouldPersistAttachments && allStagedOrEmpty) {
+      input.attachments = stagedRefs;
+    }
     const r = await bff.saveDraft(input);
     if (r.kind === "ok") {
+      // Mirror to the ref synchronously so addFiles can read the freshly
+      // minted id within the same async tick (the useEffect that syncs
+      // ref ← state hasn't run yet).
+      draftIdRef.current = r.value.draft_id;
       setDraftId(r.value.draft_id);
       setDraftStatus({ kind: "saved", at: r.value.updated_at });
       onDraftsChanged?.();
@@ -325,6 +463,7 @@ export function Composer({
       // Stale draft_id — another tab deleted the row. Drop the id and
       // let the next debounce mint a fresh one. The local buffer is
       // preserved so the operator doesn't lose what they typed.
+      draftIdRef.current = null;
       setDraftId(null);
       setDraftStatus({
         kind: "error",
@@ -338,14 +477,21 @@ export function Composer({
     });
   };
 
-  // ADR-0040 (slice 8.19). Validate + add files via picker or drop. Each
-  // file is read as ArrayBuffer, base64-encoded, and appended to state.
-  // Per-file and total caps are checked client-side; the BFF re-checks.
+  // ADR-0040 (slice 8.19) + ADR-0043 (slice 8.22). Validate + add files via
+  // picker or drop. Each file is read as ArrayBuffer, base64-encoded, and
+  // appended to state as `kind: "inline"`. When drafts are enabled and a
+  // draft_id exists, we then call stage_attachment on each accepted chip
+  // and swap it for a `kind: "staged"` ref so subsequent saves persist
+  // refs (not bytes). When drafts are enabled but no draft_id exists yet,
+  // we save a draft first to mint one. Per-file and total caps are checked
+  // client-side; the BFF re-checks.
   const addFiles = async (files: File[]): Promise<void> => {
     setAttachmentError(null);
     let runningTotal = totalAttachmentBytes;
     let runningCount = attachments.length;
-    const accepted: ComposerAttachment[] = [];
+    const accepted: Array<
+      Extract<ComposerAttachment, { kind: "inline" }>
+    > = [];
     for (const f of files) {
       if (runningCount >= MAX_ATTACHMENT_COUNT) {
         setAttachmentError(
@@ -368,6 +514,7 @@ export function Composer({
       const buf = await f.arrayBuffer();
       const base64 = encodeBase64(new Uint8Array(buf));
       accepted.push({
+        kind: "inline",
         id: `att-${Date.now()}-${runningCount}`,
         filename: f.name,
         contentType: f.type,
@@ -377,13 +524,81 @@ export function Composer({
       runningTotal += f.size;
       runningCount += 1;
     }
-    if (accepted.length > 0) {
-      setAttachments((prev) => [...prev, ...accepted]);
+    if (accepted.length === 0) return;
+
+    // We track the post-stage view of the chip list locally so the
+    // autosave at the end can pass an explicit override — the React
+    // closure's `attachments` is stale until the next render.
+    let nextAttachments: ComposerAttachment[] = [...attachments, ...accepted];
+    setAttachments(nextAttachments);
+    attachmentsTouchedRef.current = true;
+
+    // Replies don't stage (drafts disabled). Inline chips ride along on
+    // the next send and never persist.
+    if (!draftsEnabled) return;
+
+    // First-attachment-in-fresh-compose: mint a draft id so staging has a
+    // scope. saveDraftNow is debounce-safe (it always writes); if it
+    // fails we leave the chips inline and the operator's next save
+    // attempt will retry.
+    let scopedDraftId = draftId;
+    if (scopedDraftId === null) {
+      // Pass the inline chips so the mint write is consistent with what
+      // the operator sees — even though `allStagedOrEmpty` is false here
+      // (so the BFF leaves attachments alone, which is correct for the
+      // mint pass).
+      await saveDraftNow(nextAttachments);
+      scopedDraftId = draftIdRef.current;
+      if (scopedDraftId === null) {
+        // saveDraftNow surfaced its own error; leave chips inline.
+        return;
+      }
+    }
+
+    setIsStaging(true);
+    try {
+      for (const inline of accepted) {
+        const stageResult = await bff.stageAttachment({
+          address: from,
+          draft_id: scopedDraftId,
+          filename: inline.filename,
+          content_type: inline.contentType,
+          content_base64: inline.contentBase64,
+        });
+        if (stageResult.kind !== "ok") {
+          setAttachmentError(
+            "code" in stageResult
+              ? `${inline.filename}: ${stageResult.code}: ${stageResult.message}`
+              : `${inline.filename}: staging failed`,
+          );
+          continue;
+        }
+        const ref = stageResult.value;
+        const stagedChip: ComposerAttachment = {
+          kind: "staged",
+          id: ref.s3_key,
+          filename: ref.filename,
+          contentType: ref.content_type,
+          decodedSize: ref.size,
+          sha256: ref.sha256,
+          s3Key: ref.s3_key,
+        };
+        nextAttachments = nextAttachments.map((a) =>
+          a.id === inline.id ? stagedChip : a,
+        );
+        setAttachments(nextAttachments);
+      }
+      // Persist the new refs immediately so a reload before the
+      // autosave debounce still finds them.
+      await saveDraftNow(nextAttachments);
+    } finally {
+      setIsStaging(false);
     }
   };
 
   const removeAttachment = (id: string): void => {
     setAttachments((prev) => prev.filter((a) => a.id !== id));
+    attachmentsTouchedRef.current = true;
     setAttachmentError(null);
   };
 
@@ -526,11 +741,40 @@ export function Composer({
       input.references = seed.references.split(/\s+/).filter((s) => s.length > 0);
     }
     if (attachments.length > 0) {
-      input.attachments = attachments.map<SendEmailAttachment>((a) => ({
-        filename: a.filename,
-        content_type: a.contentType,
-        content_base64: a.contentBase64,
-      }));
+      // ADR-0043 (slice 8.22). Inline chips ride along with their bytes;
+      // staged chips need a round-trip to fetch the bytes back from S3
+      // and re-base64. A 404 on hydrate means the staging blob expired
+      // (30-day lifecycle) or was never written — we surface that as a
+      // re-attach prompt and abort the send so the operator doesn't
+      // ship a partial message.
+      const wireAttachments: SendEmailAttachment[] = [];
+      for (const a of attachments) {
+        if (a.kind === "inline") {
+          wireAttachments.push({
+            filename: a.filename,
+            content_type: a.contentType,
+            content_base64: a.contentBase64,
+          });
+          continue;
+        }
+        const hydrated = await bff.getStagedAttachment({ s3_key: a.s3Key });
+        if (hydrated.kind !== "ok") {
+          const detail =
+            hydrated.kind === "not_found"
+              ? `${a.filename} is no longer available — please re-attach`
+              : "code" in hydrated
+                ? `${a.filename}: ${hydrated.code}: ${hydrated.message}`
+                : `${a.filename}: failed to load attachment`;
+          setStatus({ kind: "error", message: detail });
+          return;
+        }
+        wireAttachments.push({
+          filename: a.filename,
+          content_type: a.contentType,
+          content_base64: hydrated.value.content_base64,
+        });
+      }
+      input.attachments = wireAttachments;
     }
 
     const result: RpcResult<SendEmailResult> = await bff.sendEmail(input);
@@ -704,9 +948,9 @@ export function Composer({
               {" · "}
               {attachments.length} / {MAX_ATTACHMENT_COUNT} files
             </span>
-            {draftsEnabled && attachments.length > 0 ? (
+            {isStaging ? (
               <span className="composer__attach-note mono faint">
-                · not saved with draft
+                · staging…
               </span>
             ) : null}
           </div>
@@ -782,7 +1026,7 @@ export function Composer({
           <button
             className="btn btn--primary"
             onClick={() => void send()}
-            disabled={status.kind === "sending" || overCap}
+            disabled={status.kind === "sending" || overCap || isStaging}
           >
             <span>
               {status.kind === "sending"

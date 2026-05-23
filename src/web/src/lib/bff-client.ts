@@ -445,6 +445,19 @@ export type ReplyToEmailInput = {
   reply_all?: boolean;
 };
 
+// ADR-0043 (slice 8.22): a draft attachment ref carries enough metadata
+// to render the chip and locate the staged blob on send. The s3_key is
+// shaped `outbound-staging/<address>/<draft_id>/<idx>` and the dispatcher
+// validates that scope on save_draft so the composer can't smuggle a ref
+// from another mailbox.
+export type DraftAttachmentRef = {
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  s3_key: string;
+};
+
 // ADR-0035 (slice 8.17): drafts share the address partition with messages
 // but live under SK prefix "DRAFT#" with a `kind: "draft"` marker. Optional
 // recipient fields use the absent-vs-null trichotomy: omitted = "leave alone
@@ -465,6 +478,10 @@ export type StoredDraft = {
   subject: string | null;
   in_reply_to: string | null;
   references: string | null;
+  // ADR-0043 (slice 8.22): staged-attachment refs. [] on drafts that
+  // never had an attachment and on rows written before this field
+  // existed (the reader projects absent → []).
+  attachments: DraftAttachmentRef[];
   created_at: string;
   updated_at: string;
 };
@@ -484,6 +501,43 @@ export type SaveDraftInput = {
   subject?: string | null;
   in_reply_to?: string | null;
   references?: string | null;
+  // ADR-0043 (slice 8.22): omit → leave stored attachments alone,
+  // [] → clear, [ref, ...] → replace. The composer always knows the
+  // full chip strip; sending the diff would just shift work to the
+  // BFF.
+  attachments?: DraftAttachmentRef[];
+};
+
+// ADR-0043 (slice 8.22). The composer calls stage_attachment the moment
+// the operator picks a file. The BFF decodes once, writes bytes to
+// `outbound-staging/<address>/<draft_id>/<idx>` in the raw-mime bucket,
+// and returns the canonical ref. The composer holds the ref in chip
+// state and includes it on the next save_draft.
+export type StageAttachmentInput = {
+  address: string;
+  draft_id: string;
+  filename: string;
+  content_type: string;
+  content_base64: string;
+};
+
+export type StageAttachmentResult = DraftAttachmentRef;
+
+// ADR-0043 (slice 8.22). Reverse of stage_attachment. Called on send when a
+// resumed draft carries staged refs — the composer asks the BFF to inline
+// the bytes back to base64 so the existing send_email shape carries them
+// unchanged. 404 means the staging blob is gone (lifecycle-swept or
+// never written) — UIs surface that as "attachment unavailable, please
+// re-attach".
+export type GetStagedAttachmentInput = {
+  s3_key: string;
+};
+
+export type GetStagedAttachmentResult = {
+  filename: string | null;
+  content_type: string | null;
+  size: number;
+  content_base64: string;
 };
 
 export type SaveDraftResult = {
@@ -655,6 +709,25 @@ export const bff = {
     input: DeleteDraftInput,
   ): Promise<RpcResult<DeleteDraftResult>> {
     return call<DeleteDraftResult>("delete_draft", input);
+  },
+  // ADR-0043 (slice 8.22). Stage one attachment to S3 the moment the
+  // operator picks it. The composer holds the returned ref in chip state
+  // and includes it on the next save_draft. A 501 means this BFF was
+  // built without an attachmentStager — the operator can still send by
+  // attaching from disk on the send-time composer.
+  stageAttachment(
+    input: StageAttachmentInput,
+  ): Promise<RpcResult<StageAttachmentResult>> {
+    return call<StageAttachmentResult>("stage_attachment", input);
+  },
+  // ADR-0043 (slice 8.22). Reverse of stage_attachment. Inline-fetch a staged
+  // blob's bytes back as base64 so the composer can reuse the existing
+  // send_email attachments[] shape on send-from-draft. 404 means the blob
+  // is gone — surface as a re-attach prompt.
+  getStagedAttachment(
+    input: GetStagedAttachmentInput,
+  ): Promise<RpcResult<GetStagedAttachmentResult>> {
+    return call<GetStagedAttachmentResult>("get_staged_attachment", input);
   },
   // ADR-0037 (slice 8.17). Per-thread label fan-out + per-mailbox catalog.
   addThreadLabel(

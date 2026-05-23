@@ -247,6 +247,21 @@ describe("DataPlaneStack — raw MIME bucket", () => {
       },
     });
   });
+
+  it("expires staged draft attachments after 30 days (ADR-0043)", () => {
+    const t = synth();
+    t.hasResourceProperties("AWS::S3::Bucket", {
+      LifecycleConfiguration: {
+        Rules: Match.arrayWith([
+          Match.objectLike({
+            Status: "Enabled",
+            Prefix: "outbound-staging/",
+            ExpirationInDays: 30,
+          }),
+        ]),
+      },
+    });
+  });
 });
 
 describe("DataPlaneStack — RETAIN on stateful resources", () => {

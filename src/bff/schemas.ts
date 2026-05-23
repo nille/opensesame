@@ -862,6 +862,22 @@ export type SaveDraftWireInput = {
   subject?: string | null;
   in_reply_to?: string | null;
   references?: string | null;
+  // ADR-0043 (slice 8.22). Staged-attachment refs. Absent = leave stored
+  // alone, [] = clear, [ref, ...] = replace. There is no diff shape — the
+  // composer always carries the full chip list.
+  attachments?: DraftAttachmentRefWire[];
+};
+
+// ADR-0043 (slice 8.22). On the wire, a draft attachment ref carries
+// just enough metadata to render the chip and locate the staged blob.
+// The s3_key is the canonical id; the dispatcher validates it scopes
+// to the caller's (address, draft_id) before letting it land on a row.
+export type DraftAttachmentRefWire = {
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  s3_key: string;
 };
 
 export function parseSaveDraftInput(
@@ -943,7 +959,206 @@ export function parseSaveDraftInput(
     }
   }
 
+  if ("attachments" in obj) {
+    const parsed = parseDraftAttachmentRefs(
+      obj["attachments"],
+      address,
+      draftId,
+    );
+    if (!parsed.ok) return parsed;
+    out.attachments = parsed.value;
+  }
+
   return ok(out);
+}
+
+// ADR-0043 (slice 8.22). Validates the wire shape of an attachments[]
+// list on save_draft and rejects refs that don't scope to the caller's
+// (address, draft_id). Returns [] for an empty list (the "clear all
+// chips" shape). The s3_key prefix check is the smuggling defense.
+function parseDraftAttachmentRefs(
+  raw: unknown,
+  address: string,
+  draftId: string | null,
+): ParseResult<DraftAttachmentRefWire[]> {
+  if (!Array.isArray(raw)) {
+    return fail("attachments", "invalid_type", "attachments must be an array");
+  }
+  if (raw.length > MAX_ATTACHMENT_COUNT) {
+    return fail(
+      "attachments",
+      "invalid_value",
+      `attachments count exceeds ${MAX_ATTACHMENT_COUNT}`,
+    );
+  }
+  const out: DraftAttachmentRefWire[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const item = expectObject(raw[i]);
+    if (item === null) {
+      return fail(
+        "attachments",
+        "invalid_type",
+        `attachments[${i}] must be an object`,
+      );
+    }
+    const filename = expectString(item["filename"]);
+    if (filename === null || filename.length === 0) {
+      return fail(
+        "attachments",
+        "missing",
+        `attachments[${i}].filename is required`,
+      );
+    }
+    const content_type = expectString(item["content_type"]);
+    if (content_type === null) {
+      return fail(
+        "attachments",
+        "invalid_type",
+        `attachments[${i}].content_type must be a string`,
+      );
+    }
+    const size = item["size"];
+    if (
+      typeof size !== "number" ||
+      !Number.isFinite(size) ||
+      !Number.isInteger(size) ||
+      size < 0
+    ) {
+      return fail(
+        "attachments",
+        "invalid_value",
+        `attachments[${i}].size must be a non-negative integer`,
+      );
+    }
+    const sha256 = expectString(item["sha256"]);
+    if (sha256 === null || sha256.length === 0) {
+      return fail(
+        "attachments",
+        "missing",
+        `attachments[${i}].sha256 is required`,
+      );
+    }
+    const s3_key = expectString(item["s3_key"]);
+    if (s3_key === null || s3_key.length === 0) {
+      return fail(
+        "attachments",
+        "missing",
+        `attachments[${i}].s3_key is required`,
+      );
+    }
+    if (draftId !== null) {
+      const expectedPrefix = `outbound-staging/${address}/${draftId}/`;
+      if (!s3_key.startsWith(expectedPrefix)) {
+        return fail(
+          "attachments",
+          "invalid_value",
+          `attachments[${i}].s3_key does not scope to this draft`,
+        );
+      }
+    }
+    out.push({ filename, content_type, size, sha256, s3_key });
+  }
+  return ok(out);
+}
+
+// ---- stage_attachment (ADR-0043, slice 8.22) ----
+//
+// The composer calls this the moment the operator picks a file. Bytes
+// are written to S3 under outbound-staging/<address>/<draft_id>/<idx>;
+// the response is a ref the composer holds in chip state and includes
+// on the next save_draft. Reuses ADR-0040's per-file (10MB) cap; the
+// per-draft total is enforced by the dispatcher (it counts bytes
+// across already-staged refs on the row plus the incoming file).
+
+export type StageAttachmentWireInput = {
+  address: string;
+  draft_id: string;
+  filename: string;
+  content_type: string;
+  content_base64: string;
+};
+
+export function parseStageAttachmentInput(
+  body: unknown,
+): ParseResult<StageAttachmentWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+  const address = expectString(obj["address"]);
+  if (address === null || address.length === 0) {
+    return fail("address", "missing", "address is required");
+  }
+  const draft_id = expectString(obj["draft_id"]);
+  if (draft_id === null || draft_id.length === 0) {
+    return fail("draft_id", "missing", "draft_id is required");
+  }
+  const filename = expectString(obj["filename"]);
+  if (filename === null || filename.length === 0) {
+    return fail("filename", "missing", "filename is required");
+  }
+  const content_type = expectString(obj["content_type"]);
+  if (content_type === null || content_type.length === 0) {
+    return fail("content_type", "missing", "content_type is required");
+  }
+  const content_base64 = expectString(obj["content_base64"]);
+  if (content_base64 === null) {
+    return fail(
+      "content_base64",
+      obj["content_base64"] === undefined ? "missing" : "invalid_type",
+      "content_base64 must be a string",
+    );
+  }
+  const decodedLen = decodedBase64Length(content_base64);
+  if (decodedLen === null) {
+    return fail(
+      "content_base64",
+      "invalid_value",
+      "content_base64 is not valid base64",
+    );
+  }
+  if (decodedLen > MAX_ATTACHMENT_FILE_BYTES) {
+    return fail(
+      "content_base64",
+      "invalid_value",
+      `attachment exceeds per-file cap of ${MAX_ATTACHMENT_FILE_BYTES} bytes`,
+    );
+  }
+  return ok({ address, draft_id, filename, content_type, content_base64 });
+}
+
+// ---- get_staged_attachment (ADR-0043, slice 8.22) ----
+//
+// On send from a restored draft, the composer hydrates each ref's bytes
+// back to inline base64 so it can re-emit them on send_email. Bucket
+// CORS is intentionally not configured on the raw-mime bucket (browser
+// fetch direct-from-S3 is out of scope for slice 8.22), so the BFF
+// reads the bytes and returns them in the response. The schema accepts
+// only `outbound-staging/`-prefixed keys; non-staging keys are 400.
+
+export type GetStagedAttachmentWireInput = {
+  s3_key: string;
+};
+
+export function parseGetStagedAttachmentInput(
+  body: unknown,
+): ParseResult<GetStagedAttachmentWireInput> {
+  const obj = expectObject(body);
+  if (obj === null) {
+    return fail("body", "invalid_type", "request body must be a JSON object");
+  }
+  const s3Key = expectString(obj["s3_key"]);
+  if (s3Key === null || s3Key.length === 0) {
+    return fail("s3_key", "missing", "s3_key is required");
+  }
+  if (!s3Key.startsWith("outbound-staging/")) {
+    return fail(
+      "s3_key",
+      "invalid_value",
+      "s3_key must reference a draft staging blob",
+    );
+  }
+  return ok({ s3_key: s3Key });
 }
 
 // ---- list_drafts (ADR-0035) ----

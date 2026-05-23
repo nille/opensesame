@@ -37,6 +37,7 @@ import { makeDynamoMessageStore } from "../aws/dynamodb.js";
 import { makeDynamoSuppressionList } from "../aws/dynamodb-suppression.js";
 import {
   makeS3AttachmentPresigner,
+  makeS3AttachmentStager,
   makeS3AttachmentWriter,
 } from "../aws/s3-attachment-store.js";
 import {
@@ -207,12 +208,27 @@ function main(): void {
     };
   };
 
+  // ADR-0043 (slice 8.22). The stager mints `outbound-staging/<addr>/
+  // <draft_id>/<idx>` keys; <idx> is one past the last existing ref on
+  // the draft. Concurrent picks from one composer are linearized by the
+  // operator (one drag-drop at a time). On a missing draft the count
+  // collapses to 0, which is also the right index for the first ref.
+  const attachmentStager = makeS3AttachmentStager({
+    client: s3,
+    bucket: rawMimeBucket,
+    nextIndex: async ({ address, draftId }) => {
+      const draft = await reader.getDraft({ address, draft_id: draftId });
+      return draft === null ? 0 : draft.attachments.length;
+    },
+  });
+
   const honoDeps: Parameters<typeof makeHonoApp>[0] = {
     reader,
     sendEmail,
     attachmentPresigner: makeS3AttachmentPresigner({ client: s3 }),
     attachmentBucket: rawMimeBucket,
     rawReader: makeS3RawMessageReader({ client: s3 }),
+    attachmentStager,
   };
   if (corsOrigin !== undefined) honoDeps.corsOrigin = corsOrigin;
   const app = makeHonoApp(honoDeps);

@@ -177,6 +177,18 @@ export class DataPlaneStack extends Stack {
             },
           ],
         },
+        {
+          // ADR-0043 (slice 8.22): orphan-cleanup for staged draft
+          // attachments. delete_draft does best-effort S3 cleanup, but
+          // tab-closes / network drops can leak blobs under
+          // `outbound-staging/`. 30 days is the upper bound on a
+          // realistic draft lifetime — much longer than the autosave
+          // cycle, short enough that abandoned drafts don't accumulate
+          // storage indefinitely.
+          enabled: true,
+          prefix: "outbound-staging/",
+          expiration: Duration.days(30),
+        },
       ],
     });
 

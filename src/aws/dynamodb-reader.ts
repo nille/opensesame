@@ -1144,6 +1144,12 @@ async function saveDraft(
       subject: input.subject ?? null,
       in_reply_to: input.in_reply_to ?? null,
       references: input.references ?? null,
+      // ADR-0043 (slice 8.22). First-save defaults the list to [].
+      // The composer's stage_attachment lands the file *before* the
+      // first save_draft anyway (bytes go to S3 first, ref ships on
+      // the next autosave), so this branch usually writes [] and the
+      // upsert branch handles the post-stage save.
+      attachments: input.attachments ?? [],
       created_at: isoNow,
       updated_at: isoNow,
     };
@@ -1205,22 +1211,25 @@ async function saveDraft(
   // Only patch fields the caller passed; an absent key on the wire means
   // "leave alone", a present null means "clear". Both round-trip identically
   // through DDB because StoredDraft's recipient slots are nullable strings.
-  const optionalFields: ReadonlyArray<keyof SaveDraftInput> = [
-    "body_html",
-    "to",
-    "cc",
-    "subject",
-    "in_reply_to",
-    "references",
-  ];
-  for (const f of optionalFields) {
+  const optionalNullableStringFields: ReadonlyArray<
+    "body_html" | "to" | "cc" | "subject" | "in_reply_to" | "references"
+  > = ["body_html", "to", "cc", "subject", "in_reply_to", "references"];
+  for (const f of optionalNullableStringFields) {
     if (f in input) {
-      const ref = `:${String(f)}`;
-      const nameRef = `#${String(f)}`;
-      exprNames[nameRef] = String(f);
+      const ref = `:${f}`;
+      const nameRef = `#${f}`;
+      exprNames[nameRef] = f;
       setExpr.push(`${nameRef} = ${ref}`);
       exprValues[ref] = input[f] ?? null;
     }
+  }
+  // ADR-0043 (slice 8.22). Attachments are a list, not a nullable
+  // string. Same trichotomy: absent key = leave alone, present array =
+  // replace. There is no "null clears" — `[]` is the clear shape.
+  if ("attachments" in input) {
+    exprNames["#attachments"] = "attachments";
+    setExpr.push("#attachments = :attachments");
+    exprValues[":attachments"] = input.attachments ?? [];
   }
 
   try {
@@ -1730,9 +1739,51 @@ function projectDraftRow(row: Record<string, unknown>): StoredDraft | null {
     subject: nullableString(row["subject"]),
     in_reply_to: nullableString(row["in_reply_to"]),
     references: nullableString(row["references"]),
+    // ADR-0043 (slice 8.22). Tail-add list. Pre-existing rows lack
+    // the attribute and project as []; corrupt entries (missing a
+    // required field) drop the entire ref rather than partially-
+    // hydrate the chip strip.
+    attachments: projectDraftAttachments(row["attachments"]),
     created_at: createdAt,
     updated_at: updatedAt,
   };
+}
+
+// ADR-0043 (slice 8.22). DDB stores the list as List<Map>; the SDK
+// returns it as Array<Record<string, unknown>>. Defensive — a missing
+// field on any single ref drops *that* ref but keeps the rest.
+function projectDraftAttachments(
+  raw: unknown,
+): import("../core/store.js").DraftAttachmentRef[] {
+  if (!Array.isArray(raw)) return [];
+  const out: import("../core/store.js").DraftAttachmentRef[] = [];
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== "object") continue;
+    const e = entry as Record<string, unknown>;
+    const filename = e["filename"];
+    const contentType = e["content_type"];
+    const size = e["size"];
+    const sha256 = e["sha256"];
+    const s3Key = e["s3_key"];
+    if (
+      typeof filename !== "string" ||
+      typeof contentType !== "string" ||
+      typeof size !== "number" ||
+      !Number.isFinite(size) ||
+      typeof sha256 !== "string" ||
+      typeof s3Key !== "string"
+    ) {
+      continue;
+    }
+    out.push({
+      filename,
+      content_type: contentType,
+      size,
+      sha256,
+      s3_key: s3Key,
+    });
+  }
+  return out;
 }
 
 function encodeCursor(lek: Record<string, unknown>): string {

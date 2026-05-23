@@ -406,6 +406,11 @@ export type MarkReadResult =
 // italic, link, list, blockquote). Null on plain-text drafts and on every
 // draft created before the field existed; the composer falls back to
 // loading body_text as paragraphs in that case.
+//
+// ADR-0043 (slice 8.22) extension: `attachments` carries the staged-S3
+// refs (one per chip in the composer). Pre-existing rows lack the
+// attribute and project as `[]`; the composer renders an empty chip
+// strip in that case.
 export type StoredDraft = {
   schema_v: "1";
   kind: "draft";
@@ -418,8 +423,23 @@ export type StoredDraft = {
   subject: string | null;
   in_reply_to: string | null;
   references: string | null;
+  attachments: DraftAttachmentRef[];
   created_at: string;
   updated_at: string;
+};
+
+// ADR-0043 (slice 8.22). A draft attachment is staged to S3 the moment
+// the operator picks it (`stage_attachment` RPC), then carried as a ref
+// on every subsequent `save_draft`. Bytes round-trip back through
+// `get_attachment` (slice 8.5) on send. The ref carries enough to
+// render the chip (filename, size) and to validate scope on save
+// (s3_key must match `outbound-staging/<address>/<draft_id>/<idx>`).
+export type DraftAttachmentRef = {
+  filename: string;
+  content_type: string;
+  size: number;
+  sha256: string;
+  s3_key: string;
 };
 
 // `draft_id: null` on first save — the reader mints a ULID. Subsequent
@@ -428,6 +448,13 @@ export type StoredDraft = {
 // `body_html` follows the same absent-vs-null trichotomy: omitted = leave
 // the stored value alone on upsert, null = clear (operator stripped all
 // formatting), string = set.
+//
+// ADR-0043 (slice 8.22): `attachments` follows an absent-vs-set
+// trichotomy: omitted = leave stored attachments alone (autosaves
+// driven by typing don't touch the chip strip), `[]` = clear all
+// attachments (operator removed every chip), `[ref, ...]` = replace
+// with this exact list. There is no diff shape — the composer always
+// has the full list.
 export type SaveDraftInput = {
   address: string;
   draft_id: string | null;
@@ -438,6 +465,7 @@ export type SaveDraftInput = {
   subject?: string | null;
   in_reply_to?: string | null;
   references?: string | null;
+  attachments?: DraftAttachmentRef[];
 };
 
 // Echoes both timestamps so the composer's "saved · 2s ago" footer and
@@ -475,6 +503,70 @@ export type DeleteDraftInput = {
 export type DeleteDraftResult = {
   draft_id: string;
   deleted: boolean;
+};
+
+// ADR-0043 (slice 8.22). The composer hands the BFF inline base64 bytes
+// the moment the operator picks a file. The BFF decodes once, validates
+// the size cap, writes to `outbound-staging/<address>/<draft_id>/<idx>`
+// in the raw-mime bucket, and returns a ref the composer holds in chip
+// state and includes on the next `save_draft`.
+export type StageAttachmentInput = {
+  address: string;
+  draft_id: string;
+  filename: string;
+  content_type: string;
+  content_base64: string;
+};
+
+// Echoes the size + hash so the composer can render the chip without a
+// re-decode round-trip. The s3_key is the canonical id; the ref shape
+// matches DraftAttachmentRef one-to-one.
+export type StageAttachmentResult = DraftAttachmentRef;
+
+// ADR-0043 (slice 8.22). Port for staging draft attachments to S3.
+// Lives separate from the MessageReader (which is DDB-bound) because
+// the byte path and the metadata path are different stores. The
+// dispatcher composes the two: stage_attachment hits the stager,
+// save_draft hits the reader, delete_draft fans both.
+export interface AttachmentStager {
+  // Decodes the base64 bytes once, validates the per-call cap, writes
+  // to outbound-staging/<address>/<draft_id>/<idx> in the raw-mime
+  // bucket, and returns the canonical ref. The reader does not see
+  // the bytes; the composer's only persistence path for outbound
+  // attachment bytes is this method.
+  stageAttachment(
+    input: StageAttachmentInput,
+  ): Promise<StageAttachmentResult>;
+  // Best-effort batch delete. Used by delete_draft to clean up the
+  // staged blobs after the DDB row goes. Failures are logged and
+  // swept by the bucket's lifecycle rule (30 days); the caller does
+  // not get an error so a partial-cleanup leaves DDB consistent.
+  cleanupStagedAttachments(input: {
+    s3_keys: string[];
+  }): Promise<void>;
+  // ADR-0043 (slice 8.22). Inline byte fetch by staged-blob s3_key.
+  // The composer needs this on send: for each ref carried on the
+  // restored draft, hydrate bytes back into the same `content_base64`
+  // shape `send_email` already accepts. A presigned-URL + browser
+  // `fetch()` round-trip would require CORS on the raw-mime bucket,
+  // which the ADR rules out for v1 — so the BFF reads bytes itself
+  // and hands them back inline (same shape as `stage_attachment`).
+  getStagedAttachment(input: {
+    s3_key: string;
+  }): Promise<StagedAttachmentBytes | null>;
+}
+
+// ADR-0043 (slice 8.22). Returned by AttachmentStager.getStagedAttachment.
+// `content_base64` is decoded-byte-for-byte the same blob the composer
+// staged; the composer re-emits it as a SendEmailAttachment on send.
+// Null at the stager level means "the S3 object was not found"
+// (lifecycle-swept or never written) — the dispatcher surfaces that as
+// 404 so the UI can ask the operator to re-attach.
+export type StagedAttachmentBytes = {
+  filename: string | null;
+  content_type: string | null;
+  size: number;
+  content_base64: string;
 };
 
 // ADR-0031 (slice 8.13). Per-thread read/unread toggle. Wire shape mirrors

@@ -330,6 +330,200 @@ describe("DynamoMessageReader.saveDraft (ADR-0035)", () => {
     ).toBeNull();
   });
 
+  it("first save: persists attachments[] when the input carries staged refs (ADR-0043)", async () => {
+    const puts: PutCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof PutCommand) {
+        puts.push(cmd);
+        return {};
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+      makeUlid: fixedUlid(["01KS500000000000000000DR01"]),
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: null,
+        body_text: "with file",
+        attachments: [
+          {
+            filename: "spec.pdf",
+            content_type: "application/pdf",
+            size: 4096,
+            sha256: "abc",
+            s3_key:
+              "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+          },
+        ],
+      },
+      NOW,
+    );
+    expect(puts[0]!.input.Item).toMatchObject({
+      attachments: [
+        {
+          filename: "spec.pdf",
+          content_type: "application/pdf",
+          size: 4096,
+          sha256: "abc",
+          s3_key:
+            "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+      ],
+    });
+  });
+
+  it("first save: defaults attachments to [] when omitted (ADR-0043)", async () => {
+    const puts: PutCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof PutCommand) {
+        puts.push(cmd);
+        return {};
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+      makeUlid: fixedUlid(["01KS500000000000000000DR01"]),
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: null,
+        body_text: "no files",
+      },
+      NOW,
+    );
+    expect(puts[0]!.input.Item).toMatchObject({ attachments: [] });
+  });
+
+  it("upsert: replaces attachments[] when the input carries the field (ADR-0043)", async () => {
+    const updates: UpdateCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof UpdateCommand) {
+        updates.push(cmd);
+        return { Attributes: {} };
+      }
+      if (cmd instanceof GetCommand) {
+        return { Item: { created_at: "2026-05-22T09:00:00.000Z" } };
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    const refs = [
+      {
+        filename: "a.pdf",
+        content_type: "application/pdf",
+        size: 1,
+        sha256: "h",
+        s3_key:
+          "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+      },
+    ];
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: "01KS500000000000000000DR01",
+        body_text: "x",
+        attachments: refs,
+      },
+      NOW,
+    );
+
+    const u = updates[0]!;
+    expect(String(u.input.UpdateExpression)).toMatch(
+      /#attachments\s*=\s*:attachments/,
+    );
+    expect(
+      (u.input.ExpressionAttributeValues as Record<string, unknown>)[
+        ":attachments"
+      ],
+    ).toEqual(refs);
+    expect(
+      (u.input.ExpressionAttributeNames as Record<string, string>)[
+        "#attachments"
+      ],
+    ).toBe("attachments");
+  });
+
+  it("upsert: empty attachments[] clears the list (ADR-0043)", async () => {
+    const updates: UpdateCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof UpdateCommand) {
+        updates.push(cmd);
+        return { Attributes: {} };
+      }
+      if (cmd instanceof GetCommand) {
+        return { Item: { created_at: "2026-05-22T09:00:00.000Z" } };
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: "01KS500000000000000000DR01",
+        body_text: "x",
+        attachments: [],
+      },
+      NOW,
+    );
+    const u = updates[0]!;
+    expect(
+      (u.input.ExpressionAttributeValues as Record<string, unknown>)[
+        ":attachments"
+      ],
+    ).toEqual([]);
+  });
+
+  it("upsert: omitting attachments leaves the column untouched (ADR-0043)", async () => {
+    const updates: UpdateCommand[] = [];
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof UpdateCommand) {
+        updates.push(cmd);
+        return { Attributes: {} };
+      }
+      if (cmd instanceof GetCommand) {
+        return { Item: { created_at: "2026-05-22T09:00:00.000Z" } };
+      }
+      throw new Error("unexpected command");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+
+    await reader.saveDraft(
+      {
+        address: "alice@acme.com",
+        draft_id: "01KS500000000000000000DR01",
+        body_text: "x",
+      },
+      NOW,
+    );
+    const u = updates[0]!;
+    expect(String(u.input.UpdateExpression)).not.toMatch(/#attachments/);
+    expect(
+      (u.input.ExpressionAttributeValues as Record<string, unknown>)[
+        ":attachments"
+      ],
+    ).toBeUndefined();
+  });
+
   it("upsert: omitting body_html leaves the column untouched", async () => {
     const updates: UpdateCommand[] = [];
     const client = makeStubClient(async (cmd) => {
@@ -640,6 +834,121 @@ describe("DynamoMessageReader.getDraft", () => {
       draft_id: "01KS500000000000000000DR01",
     });
     expect(draft!.body_html).toBeNull();
+  });
+
+  it("projects attachments[] onto the StoredDraft (ADR-0043)", async () => {
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof GetCommand) {
+        return {
+          Item: {
+            kind: "draft",
+            schema_v: "1",
+            address: "alice@acme.com",
+            draft_id: "01KS500000000000000000DR01",
+            internal_id: "DRAFT#01KS500000000000000000DR01",
+            body_text: "hi",
+            attachments: [
+              {
+                filename: "spec.pdf",
+                content_type: "application/pdf",
+                size: 12345,
+                sha256: "abc123",
+                s3_key:
+                  "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+              },
+            ],
+            created_at: "2026-05-22T09:00:00.000Z",
+            updated_at: "2026-05-22T10:00:00.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const draft = await reader.getDraft({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(draft!.attachments).toEqual([
+      {
+        filename: "spec.pdf",
+        content_type: "application/pdf",
+        size: 12345,
+        sha256: "abc123",
+        s3_key:
+          "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+      },
+    ]);
+  });
+
+  it("attachments stays [] when the row pre-dates ADR-0043", async () => {
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof GetCommand) {
+        return {
+          Item: {
+            kind: "draft",
+            schema_v: "1",
+            address: "alice@acme.com",
+            draft_id: "01KS500000000000000000DR01",
+            internal_id: "DRAFT#01KS500000000000000000DR01",
+            body_text: "hi",
+            created_at: "2026-05-22T09:00:00.000Z",
+            updated_at: "2026-05-22T10:00:00.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const draft = await reader.getDraft({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(draft!.attachments).toEqual([]);
+  });
+
+  it("drops corrupt attachment refs while keeping the rest", async () => {
+    const client = makeStubClient(async (cmd) => {
+      if (cmd instanceof GetCommand) {
+        return {
+          Item: {
+            kind: "draft",
+            schema_v: "1",
+            address: "alice@acme.com",
+            draft_id: "01KS500000000000000000DR01",
+            internal_id: "DRAFT#01KS500000000000000000DR01",
+            body_text: "hi",
+            attachments: [
+              { filename: "ok.pdf", content_type: "application/pdf", size: 1, sha256: "h", s3_key: "k" },
+              { filename: "bad.pdf" }, // missing required fields → drop
+              "not an object", // → drop
+              { filename: "ok2.pdf", content_type: "application/pdf", size: 2, sha256: "h2", s3_key: "k2" },
+            ],
+            created_at: "2026-05-22T09:00:00.000Z",
+            updated_at: "2026-05-22T10:00:00.000Z",
+          },
+        };
+      }
+      throw new Error("unexpected");
+    });
+    const reader = makeDynamoMessageReader({
+      client: client as never,
+      ...TABLES,
+    });
+    const draft = await reader.getDraft({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(draft!.attachments.map((a) => a.filename)).toEqual([
+      "ok.pdf",
+      "ok2.pdf",
+    ]);
   });
 });
 

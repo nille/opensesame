@@ -2723,6 +2723,7 @@ describe("dispatch /rpc/get_draft (ADR-0035)", () => {
       subject: null,
       in_reply_to: null,
       references: null,
+      attachments: [],
       created_at: "2026-05-22T09:00:00.000Z",
       updated_at: "2026-05-22T10:00:00.000Z",
     };
@@ -2851,6 +2852,619 @@ describe("dispatch /rpc/delete_draft (ADR-0035)", () => {
     });
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ deleted: false });
+  });
+});
+
+// ADR-0043 (slice 8.22). stage_attachment + draft attachments cleanup
+// orchestration. The dispatcher composes two ports: the reader (DDB-bound)
+// and the stager (S3-bound). save_draft routes attachments through the
+// reader; delete_draft reads the row's refs first, deletes the DDB row,
+// then asks the stager to clean up.
+
+describe("dispatch /rpc/stage_attachment (ADR-0043)", () => {
+  it("400 when address is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/stage_attachment", {
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "address",
+    });
+  });
+
+  it("501 when no attachmentStager dep is configured", async () => {
+    // CLI driver / unit harness path: the stager is absent and the
+    // dispatcher refuses to fall back to a silent no-op. Surfaces 501
+    // so the operator sees the misconfiguration immediately.
+    const r = await dispatch(makeDeps(), "/rpc/stage_attachment", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.status).toBe(501);
+    expect(r.body).toMatchObject({ code: "not_implemented" });
+  });
+
+  it("200 — forwards parsed input to stager.stageAttachment and echoes the ref", async () => {
+    const stageAttachment = vi.fn(async () => ({
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size: 5,
+      sha256: "deadbeef",
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    }));
+    const deps = makeDeps({
+      attachmentStager: {
+        stageAttachment,
+        cleanupStagedAttachments: vi.fn(),
+        getStagedAttachment: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/stage_attachment", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.status).toBe(200);
+    expect(stageAttachment).toHaveBeenCalledWith({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.body).toMatchObject({
+      filename: "report.pdf",
+      sha256: "deadbeef",
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+  });
+
+  it("500 when the stager throws", async () => {
+    const deps = makeDeps({
+      attachmentStager: {
+        stageAttachment: vi.fn(async () => {
+          throw new Error("S3 unavailable");
+        }),
+        cleanupStagedAttachments: vi.fn(),
+        getStagedAttachment: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/stage_attachment", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
+  });
+});
+
+describe("dispatch /rpc/save_draft attachments plumbing (ADR-0043)", () => {
+  it("forwards attachments[] verbatim through to the reader", async () => {
+    const saveDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      created_at: "2026-05-22T10:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft,
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const refs = [
+      {
+        filename: "report.pdf",
+        content_type: "application/pdf",
+        size: 1024,
+        sha256: "abc",
+        s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+      },
+    ];
+    const r = await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: refs,
+    });
+    expect(r.status).toBe(200);
+    expect(saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ attachments: refs }),
+      expect.any(Date),
+    );
+  });
+
+  it("forwards an empty attachments[] (clear) verbatim to the reader", async () => {
+    const saveDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      created_at: "2026-05-22T10:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft,
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [],
+    });
+    expect(saveDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ attachments: [] }),
+      expect.any(Date),
+    );
+  });
+
+  it("absent attachments leaves the field off the reader-shaped input", async () => {
+    const saveDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      created_at: "2026-05-22T10:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft,
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(),
+        deleteDraft: vi.fn(),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    await dispatch(deps, "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+    });
+    const calls = saveDraft.mock.calls as unknown as Array<
+      [Record<string, unknown>, ...unknown[]]
+    >;
+    expect(calls.length).toBeGreaterThan(0);
+    const callArg = calls[0]?.[0] ?? {};
+    expect("attachments" in callArg).toBe(false);
+  });
+
+  it("rejects with 400 when an attachment ref is smuggled across drafts", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/save_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "stolen.pdf",
+          content_type: "application/pdf",
+          size: 1,
+          sha256: "abc",
+          s3_key:
+            "outbound-staging/alice@acme.com/01KS500000000000000000DR99/0",
+        },
+      ],
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "attachments",
+    });
+  });
+});
+
+describe("dispatch /rpc/delete_draft cleanup (ADR-0043)", () => {
+  it("reads refs, deletes the row, then asks the stager to clean up", async () => {
+    // Order matters per ADR-0043: read-before-delete leaves "row survives,
+    // S3 partially cleaned" as the failure mode rather than orphan-bytes-
+    // only. The dispatcher trusts the read result for the cleanup target.
+    const calls: string[] = [];
+    const stored = {
+      schema_v: "1" as const,
+      kind: "draft" as const,
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      body_html: null,
+      to: null,
+      cc: null,
+      subject: null,
+      in_reply_to: null,
+      references: null,
+      attachments: [
+        {
+          filename: "report.pdf",
+          content_type: "application/pdf",
+          size: 1024,
+          sha256: "abc",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+        {
+          filename: "notes.txt",
+          content_type: "text/plain",
+          size: 32,
+          sha256: "def",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/1",
+        },
+      ],
+      created_at: "2026-05-22T09:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    };
+    const cleanupStagedAttachments = vi.fn(async () => {
+      calls.push("cleanup");
+    });
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(async () => {
+          calls.push("getDraft");
+          return stored;
+        }),
+        deleteDraft: vi.fn(async () => {
+          calls.push("deleteDraft");
+          return {
+            draft_id: "01KS500000000000000000DR01",
+            deleted: true,
+          };
+        }),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments,
+        getStagedAttachment: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(r.status).toBe(200);
+    expect(calls).toEqual(["getDraft", "deleteDraft", "cleanup"]);
+    expect(cleanupStagedAttachments).toHaveBeenCalledWith({
+      s3_keys: [
+        "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        "outbound-staging/alice@acme.com/01KS500000000000000000DR01/1",
+      ],
+    });
+  });
+
+  it("skips cleanup when the draft is already missing", async () => {
+    const cleanupStagedAttachments = vi.fn();
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(async () => null),
+        deleteDraft: vi.fn(async () => ({
+          draft_id: "01KS500000000000000000DRXX",
+          deleted: false,
+        })),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments,
+        getStagedAttachment: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DRXX",
+    });
+    expect(r.status).toBe(200);
+    expect(cleanupStagedAttachments).not.toHaveBeenCalled();
+  });
+
+  it("when no stager is wired, behaves like classic delete_draft (no read, no cleanup)", async () => {
+    const getDraft = vi.fn();
+    const deleteDraft = vi.fn(async () => ({
+      draft_id: "01KS500000000000000000DR01",
+      deleted: true,
+    }));
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft,
+        deleteDraft,
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(r.status).toBe(200);
+    expect(getDraft).not.toHaveBeenCalled();
+    expect(deleteDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces 200 even when stager cleanup throws (best-effort)", async () => {
+    // Cleanup is best-effort because the bucket lifecycle rule sweeps any
+    // misses after 30 days. A noisy 5xx on the operator's "delete draft"
+    // click would punish them for an internal S3 hiccup that doesn't
+    // affect their data.
+    const stored = {
+      schema_v: "1" as const,
+      kind: "draft" as const,
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      body_html: null,
+      to: null,
+      cc: null,
+      subject: null,
+      in_reply_to: null,
+      references: null,
+      attachments: [
+        {
+          filename: "report.pdf",
+          content_type: "application/pdf",
+          size: 1024,
+          sha256: "abc",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+      ],
+      created_at: "2026-05-22T09:00:00.000Z",
+      updated_at: "2026-05-22T10:00:00.000Z",
+    };
+    const warn = vi.fn();
+    const deps = makeDeps({
+      reader: {
+        listInbox: vi.fn(),
+        getByMessageId: vi.fn(),
+        getByPrimaryKey: vi.fn(),
+        markRead: vi.fn(),
+        markReadByPrimaryKey: vi.fn(),
+        searchEmail: vi.fn(),
+        listThreadMessages: vi.fn(),
+        starThread: vi.fn(),
+        snoozeThread: vi.fn(),
+        trashThread: vi.fn(),
+        markThreadRead: vi.fn(),
+        archiveThread: vi.fn(),
+        saveDraft: vi.fn(),
+        listDrafts: vi.fn(),
+        getDraft: vi.fn(async () => stored),
+        deleteDraft: vi.fn(async () => ({
+          draft_id: "01KS500000000000000000DR01",
+          deleted: true,
+        })),
+        addThreadLabel: vi.fn(),
+        removeThreadLabel: vi.fn(),
+        listLabels: vi.fn(),
+        createLabel: vi.fn(),
+        deleteLabel: vi.fn(),
+        renameLabel: vi.fn(),
+      },
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments: vi.fn(async () => {
+          throw new Error("S3 unavailable");
+        }),
+        getStagedAttachment: vi.fn(),
+      },
+      logger: { warn },
+    });
+    const r = await dispatch(deps, "/rpc/delete_draft", {
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+    });
+    expect(r.status).toBe(200);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("dispatch /rpc/get_staged_attachment (ADR-0043)", () => {
+  it("400 when s3_key is missing", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/get_staged_attachment", {});
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "s3_key",
+    });
+  });
+
+  it("400 when s3_key doesn't carry the staging prefix", async () => {
+    // The composer should never produce a non-staging s3_key; reject so
+    // a smuggling attempt against `attachments/` (the slice-4 inbound
+    // prefix) lands as 400 not 200.
+    const r = await dispatch(makeDeps(), "/rpc/get_staged_attachment", {
+      s3_key: "attachments/alice@acme.com/abc/0",
+    });
+    expect(r.status).toBe(400);
+    expect(r.body).toMatchObject({
+      code: "invalid_request",
+      field: "s3_key",
+      reason: "invalid_value",
+    });
+  });
+
+  it("501 when no stager is wired", async () => {
+    const r = await dispatch(makeDeps(), "/rpc/get_staged_attachment", {
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.status).toBe(501);
+    expect(r.body).toMatchObject({ code: "not_implemented" });
+  });
+
+  it("404 when the stager returns null (lifecycle-swept blob)", async () => {
+    const deps = makeDeps({
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments: vi.fn(),
+        getStagedAttachment: vi.fn(async () => null),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/get_staged_attachment", {
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.status).toBe(404);
+    expect(r.body).toMatchObject({ code: "staged_attachment_not_found" });
+  });
+
+  it("200 — returns inline base64 + content_type when the stager has the bytes", async () => {
+    const getStagedAttachment = vi.fn(async () => ({
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size: 5,
+      content_base64: "aGVsbG8=",
+    }));
+    const deps = makeDeps({
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments: vi.fn(),
+        getStagedAttachment,
+      },
+    });
+    const r = await dispatch(deps, "/rpc/get_staged_attachment", {
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.status).toBe(200);
+    expect(getStagedAttachment).toHaveBeenCalledWith({
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.body).toMatchObject({
+      filename: "report.pdf",
+      content_type: "application/pdf",
+      size: 5,
+      content_base64: "aGVsbG8=",
+    });
+  });
+
+  it("500 when the stager throws", async () => {
+    const deps = makeDeps({
+      attachmentStager: {
+        stageAttachment: vi.fn(),
+        cleanupStagedAttachments: vi.fn(),
+        getStagedAttachment: vi.fn(async () => {
+          throw new Error("S3 unavailable");
+        }),
+      },
+    });
+    const r = await dispatch(deps, "/rpc/get_staged_attachment", {
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ code: "internal_error" });
   });
 });
 

@@ -7,6 +7,7 @@ import {
   parseDeleteLabelInput,
   parseGetDraftInput,
   parseGetMessageInput,
+  parseGetStagedAttachmentInput,
   parseListDraftsInput,
   parseListLabelsInput,
   parseMarkThreadReadInput,
@@ -17,6 +18,7 @@ import {
   parseSearchEmailInput,
   parseSendEmailInput,
   parseSnoozeThreadInput,
+  parseStageAttachmentInput,
   parseStarThreadInput,
   parseTrashThreadInput,
 } from "../src/bff/schemas.js";
@@ -1003,6 +1005,350 @@ describe("parseSaveDraftInput (ADR-0035)", () => {
       expect(r.error.field).toBe("body_html");
       expect(r.error.code).toBe("invalid_type");
     }
+  });
+
+  // ADR-0043 (slice 8.22): attachments[] follows an absent-vs-set trichotomy
+  // (omitted = leave alone, [] = clear, [refs] = replace). The s3_key prefix
+  // check is the smuggling defense — a ref scoped to another (address,
+  // draft_id) must not be acceptable on this draft.
+  it("accepts attachments[] with refs scoped to (address, draft_id) (ADR-0043)", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "report.pdf",
+          content_type: "application/pdf",
+          size: 1024,
+          sha256: "deadbeef",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+      ],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.attachments).toHaveLength(1);
+      expect(r.value.attachments?.[0]?.filename).toBe("report.pdf");
+    }
+  });
+
+  it("accepts an empty attachments[] (clear all chips)", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect("attachments" in r.value).toBe(true);
+      expect(r.value.attachments).toEqual([]);
+    }
+  });
+
+  it("preserves the absent-vs-set distinction on attachments", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect("attachments" in r.value).toBe(false);
+  });
+
+  it("rejects an attachment ref smuggled across drafts (wrong draft_id prefix)", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "stolen.pdf",
+          content_type: "application/pdf",
+          size: 1,
+          sha256: "abc",
+          s3_key:
+            "outbound-staging/alice@acme.com/01KS500000000000000000DR99/0",
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("attachments");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects an attachment ref smuggled across mailboxes (wrong address prefix)", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "stolen.pdf",
+          content_type: "application/pdf",
+          size: 1,
+          sha256: "abc",
+          s3_key:
+            "outbound-staging/eve@evil.com/01KS500000000000000000DR01/0",
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("does NOT enforce the s3_key prefix on first save (draft_id: null)", () => {
+    // First-save path: the composer hasn't seen a server-minted draft_id
+    // yet, so it can't have staged anything. The prefix check is skipped
+    // for null draft_id; an empty list is the realistic happy-path shape.
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: null,
+      body_text: "hi",
+      attachments: [],
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a non-array attachments value", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: "not-an-array",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("attachments");
+      expect(r.error.code).toBe("invalid_type");
+    }
+  });
+
+  it("rejects more than 20 attachment refs", () => {
+    const refs = [];
+    for (let i = 0; i < 21; i++) {
+      refs.push({
+        filename: `f${i}.bin`,
+        content_type: "application/octet-stream",
+        size: 1,
+        sha256: "abc",
+        s3_key: `outbound-staging/alice@acme.com/01KS500000000000000000DR01/${i}`,
+      });
+    }
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: refs,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects an attachment ref missing required fields", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "report.pdf",
+          content_type: "application/pdf",
+          // size missing
+          sha256: "deadbeef",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+
+  it("rejects an attachment ref with a negative size", () => {
+    const r = parseSaveDraftInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      body_text: "hi",
+      attachments: [
+        {
+          filename: "report.pdf",
+          content_type: "application/pdf",
+          size: -1,
+          sha256: "deadbeef",
+          s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+        },
+      ],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("attachments");
+  });
+});
+
+describe("parseStageAttachmentInput (ADR-0043)", () => {
+  // "aGVsbG8=" is "hello" — 5 decoded bytes, well under the 10MB cap.
+  it("accepts the minimal happy-path body", () => {
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "hello.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value.address).toBe("alice@acme.com");
+      expect(r.value.draft_id).toBe("01KS500000000000000000DR01");
+      expect(r.value.filename).toBe("hello.txt");
+      expect(r.value.content_type).toBe("text/plain");
+      expect(r.value.content_base64).toBe("aGVsbG8=");
+    }
+  });
+
+  it("rejects a missing address", () => {
+    const r = parseStageAttachmentInput({
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("address");
+  });
+
+  it("rejects a missing draft_id (no first-save path here)", () => {
+    // Unlike save_draft, stage_attachment requires a real draft_id —
+    // the composer always saves a fresh draft (mints the id) before it
+    // can pick a file to attach.
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("draft_id");
+  });
+
+  it("rejects a missing filename", () => {
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      content_type: "text/plain",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("filename");
+  });
+
+  it("rejects a missing content_type", () => {
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_base64: "aGVsbG8=",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("content_type");
+  });
+
+  it("rejects a missing content_base64", () => {
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("content_base64");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects malformed base64", () => {
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "x.txt",
+      content_type: "text/plain",
+      content_base64: "not!base64!",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("content_base64");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects bytes over the 10MB per-file cap", () => {
+    // Build a base64 string whose decoded length is > 10MB. 4 base64
+    // chars decode to 3 bytes; 14_000_000 chars → 10.5MB decoded.
+    const oversized = "A".repeat(14_000_000);
+    const r = parseStageAttachmentInput({
+      address: "alice@acme.com",
+      draft_id: "01KS500000000000000000DR01",
+      filename: "huge.bin",
+      content_type: "application/octet-stream",
+      content_base64: oversized,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("content_base64");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseStageAttachmentInput(null).ok).toBe(false);
+    expect(parseStageAttachmentInput([]).ok).toBe(false);
+    expect(parseStageAttachmentInput("x").ok).toBe(false);
+  });
+});
+
+describe("parseGetStagedAttachmentInput (ADR-0043)", () => {
+  it("accepts a well-formed staging key", () => {
+    const r = parseGetStagedAttachmentInput({
+      s3_key: "outbound-staging/alice@acme.com/01KS500000000000000000DR01/0",
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a missing s3_key as 'missing'", () => {
+    const r = parseGetStagedAttachmentInput({});
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("s3_key");
+      expect(r.error.code).toBe("missing");
+    }
+  });
+
+  it("rejects an empty s3_key", () => {
+    const r = parseGetStagedAttachmentInput({ s3_key: "" });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error.field).toBe("s3_key");
+  });
+
+  it("rejects a non-staging prefix as 'invalid_value'", () => {
+    // Smuggling defense: only outbound-staging/ keys are addressable. A
+    // caller can't ask the BFF to inline an inbound attachment with this
+    // RPC.
+    const r = parseGetStagedAttachmentInput({
+      s3_key: "attachments/alice@acme.com/abc/0",
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error.field).toBe("s3_key");
+      expect(r.error.code).toBe("invalid_value");
+    }
+  });
+
+  it("rejects a non-object body", () => {
+    expect(parseGetStagedAttachmentInput(null).ok).toBe(false);
+    expect(parseGetStagedAttachmentInput([]).ok).toBe(false);
+    expect(parseGetStagedAttachmentInput("x").ok).toBe(false);
   });
 });
 

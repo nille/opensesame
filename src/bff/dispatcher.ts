@@ -29,6 +29,7 @@ import {
 } from "../core/reply-to-email.js";
 import type {
   AddThreadLabelInput as ReaderAddThreadLabelInput,
+  AttachmentStager,
   CreateLabelInput as ReaderCreateLabelInput,
   DeleteDraftInput as ReaderDeleteDraftInput,
   DeleteLabelInput as ReaderDeleteLabelInput,
@@ -42,6 +43,7 @@ import type {
   RenameLabelInput as ReaderRenameLabelInput,
   SaveDraftInput as ReaderSaveDraftInput,
   SearchEmailInput as ReaderSearchEmailInput,
+  StageAttachmentInput as ReaderStageAttachmentInput,
 } from "../core/store.js";
 import { SuppressionBlockError } from "../core/suppression.js";
 import {
@@ -66,6 +68,8 @@ import {
   parseSearchEmailInput,
   parseSendEmailInput,
   parseSnoozeThreadInput,
+  parseGetStagedAttachmentInput,
+  parseStageAttachmentInput,
   parseStarThreadInput,
   parseTrashThreadInput,
   type ParseError,
@@ -98,6 +102,11 @@ export type BffDeps = {
   // re-parses the raw MIME from S3 and fills body_html on the response. When
   // absent (tests, CLI drivers), get_message returns body_html: null.
   rawReader?: RawMessageReader;
+  // ADR-0043 (slice 8.22): draft attachments. When provided, stage_attachment
+  // writes bytes to outbound-staging/<address>/<draft_id>/<idx> in the
+  // raw-mime bucket and delete_draft cleans up the staged blobs. When absent,
+  // stage_attachment returns 501 and delete_draft skips the cleanup pass.
+  attachmentStager?: AttachmentStager;
   // Best-effort structured logger for non-fatal failures (e.g. raw-MIME
   // re-parse errors per ADR-0042). Defaults to console so production
   // operators still see the warning even if the host forgets to wire one.
@@ -165,6 +174,10 @@ export async function dispatch(
       return handleArchiveThread(deps, body);
     case "save_draft":
       return handleSaveDraft(deps, body);
+    case "stage_attachment":
+      return handleStageAttachment(deps, body);
+    case "get_staged_attachment":
+      return handleGetStagedAttachment(deps, body);
     case "list_drafts":
       return handleListDrafts(deps, body);
     case "get_draft":
@@ -671,6 +684,13 @@ async function handleSaveDraft(
       if (v !== undefined) input[f] = v;
     }
   }
+  // ADR-0043 (slice 8.22). attachments follows an absent-vs-set trichotomy:
+  // absent on the wire → leave the stored list alone; [] → clear; [refs] →
+  // replace. The schema rejects refs whose s3_key doesn't scope to
+  // (address, draft_id) so the reader trusts its input.
+  if ("attachments" in wire && wire.attachments !== undefined) {
+    input.attachments = wire.attachments;
+  }
 
   try {
     const result = await deps.reader.saveDraft(input, new Date());
@@ -753,7 +773,124 @@ async function handleDeleteDraft(
   };
 
   try {
+    // ADR-0043 (slice 8.22). Read the row's refs first so we know which
+    // staged S3 objects belong to this draft, then DDB delete, then S3
+    // cleanup. Order matters — if the DDB delete went first and then the
+    // process crashed, we'd lose the keys and orphan the bytes silently.
+    // Reading first leaves the failure mode as "DDB row survives, S3
+    // partially cleaned" which a re-delete fixes. The lifecycle rule
+    // sweeps anything we miss. Cleanup itself is best-effort and never
+    // surfaces an error — staging blobs are internal.
+    let stagedKeys: string[] = [];
+    if (deps.attachmentStager !== undefined) {
+      try {
+        const existing = await deps.reader.getDraft(input);
+        if (existing !== null) {
+          stagedKeys = existing.attachments.map((a) => a.s3_key);
+        }
+      } catch {
+        // Read-before-delete is opportunistic. If it fails, the lifecycle
+        // rule sweeps the staged blobs after 30 days.
+      }
+    }
     const result = await deps.reader.deleteDraft(input);
+    if (deps.attachmentStager !== undefined && stagedKeys.length > 0) {
+      try {
+        await deps.attachmentStager.cleanupStagedAttachments({
+          s3_keys: stagedKeys,
+        });
+      } catch (err) {
+        const logger = deps.logger ?? defaultBffLogger;
+        logger.warn("delete_draft: staged-blob cleanup partially failed", {
+          address: input.address,
+          draft_id: input.draft_id,
+          error_class: err instanceof Error ? err.constructor.name : typeof err,
+          error_message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0043 (slice 8.22). Stage attachment bytes. The composer calls this
+// the moment the operator picks a file; the response is a ref the
+// composer holds in chip state and includes on the next save_draft.
+// Returns 501 when the stager isn't wired (unit drivers, CLI test
+// harness) — the dispatcher refuses to fall back to silent no-op.
+async function handleStageAttachment(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseStageAttachmentInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  if (deps.attachmentStager === undefined) {
+    return {
+      status: 501,
+      body: {
+        code: "not_implemented",
+        message:
+          "stage_attachment is not configured on this BFF (missing stager)",
+      },
+    };
+  }
+
+  const stagerInput: ReaderStageAttachmentInput = {
+    address: parsed.value.address,
+    draft_id: parsed.value.draft_id,
+    filename: parsed.value.filename,
+    content_type: parsed.value.content_type,
+    content_base64: parsed.value.content_base64,
+  };
+
+  try {
+    const result = await deps.attachmentStager.stageAttachment(stagerInput);
+    return ok(result);
+  } catch (err) {
+    return internalError(err);
+  }
+}
+
+// ADR-0043 (slice 8.22). Inline byte fetch for staged attachments. The
+// composer calls this on send from a restored draft to hydrate each
+// ref's bytes back to base64 before re-emitting via send_email's
+// existing attachments[] shape. 404 means the staging blob is gone
+// (lifecycle-swept or never written) — the UI surfaces that as
+// "attachment unavailable, please re-attach".
+async function handleGetStagedAttachment(
+  deps: BffDeps,
+  body: unknown,
+): Promise<DispatchResult> {
+  const parsed = parseGetStagedAttachmentInput(body);
+  if (!parsed.ok) return invalidRequest(parsed.error);
+
+  if (deps.attachmentStager === undefined) {
+    return {
+      status: 501,
+      body: {
+        code: "not_implemented",
+        message:
+          "get_staged_attachment is not configured on this BFF (missing stager)",
+      },
+    };
+  }
+
+  try {
+    const result = await deps.attachmentStager.getStagedAttachment({
+      s3_key: parsed.value.s3_key,
+    });
+    if (result === null) {
+      return {
+        status: 404,
+        body: {
+          code: "staged_attachment_not_found",
+          message: `no staged attachment at ${parsed.value.s3_key}`,
+        },
+      };
+    }
     return ok(result);
   } catch (err) {
     return internalError(err);
