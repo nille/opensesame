@@ -2058,3 +2058,101 @@ button.inbox-row__label:hover {
   border-top: 1px solid var(--rule);
   letter-spacing: 0.02em;
 }
+
+/* Slice 8.20 (ADR-0041). Cheat-sheet modal — replaces the native alert()
+ * with a styled dialog that respects day/night theme tokens, mono glyphs,
+ * and a two-column grid for keys vs. action. No focus trap, no animation
+ * beyond the existing app cadence. */
+.help-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: grid;
+  place-items: center;
+  /* The label-picker pattern uses a transparent backdrop. The cheat sheet
+   * is a context switch (operator stops working to read), so a faint
+   * scrim is appropriate — but we keep it cheap and theme-agnostic via
+   * an oklch with alpha. */
+  background: oklch(0% 0 0 / 0.32);
+  padding: var(--r-4);
+}
+
+.help-overlay__card {
+  background: var(--paper);
+  color: var(--ink);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-md);
+  padding: var(--r-5) var(--r-6);
+  width: min(560px, 100%);
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow:
+    0 1px 0 var(--rule),
+    0 24px 48px -16px rgba(0, 0, 0, 0.32);
+}
+
+.help-overlay__title {
+  margin: 0 0 var(--r-3);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-sm);
+  font-weight: 500;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+}
+
+.help-overlay__title + .help-overlay__list {
+  margin-bottom: var(--r-5);
+}
+
+.help-overlay__list {
+  margin: 0 0 var(--r-3);
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--r-1) 0;
+  font-size: var(--t-sm);
+}
+
+.help-overlay__row {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  align-items: baseline;
+  column-gap: var(--r-4);
+}
+
+.help-overlay__row dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--r-1);
+  font-family: var(--font-mono);
+  color: var(--ink);
+}
+
+.help-overlay__row dd {
+  margin: 0;
+  color: var(--ink-muted);
+}
+
+.help-overlay kbd {
+  display: inline-block;
+  padding: 0 var(--r-1);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-sm);
+  color: var(--ink);
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  line-height: 1.4;
+}
+
+.help-overlay__hint {
+  margin: var(--r-4) 0 0;
+  padding-top: var(--r-3);
+  border-top: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-xs);
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  text-align: right;
+}

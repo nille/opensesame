@@ -34,6 +34,7 @@ import {
   type ComposerSeed,
 } from "./Composer.tsx";
 import { BulkActionBar } from "./BulkActionBar.tsx";
+import { HelpOverlay } from "./HelpOverlay.tsx";
 import { computeRange, threadableRootKeys } from "../lib/selection.ts";
 import "./app.css";
 
@@ -162,6 +163,10 @@ export function App(): JSX.Element {
   // Picker open state for the bulk-action-bar's snooze button (mirrors the
   // reader-header pattern so the picker can be closed declaratively).
   const [bulkSnoozePickerOpen, setBulkSnoozePickerOpen] = useState(false);
+  // Slice 8.20 (ADR-0041). The styled cheat-sheet modal replaces alert().
+  // The `?` keybind sets this true; the overlay's onClose, the Esc branch,
+  // and a backdrop click set it false.
+  const [helpVisible, setHelpVisible] = useState(false);
 
   const inboxQuery = useQuery({
     queryKey: ["inbox", MAILBOX],
@@ -1203,6 +1208,13 @@ export function App(): JSX.Element {
         if (pane.mode === "composer") return; // composer owns its own keys
         if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+        // Slice 8.20. Help dismiss takes precedence over selection-clear so
+        // an operator who hits `?` then `Esc` doesn't lose their selection.
+        if (e.key === "Escape" && helpVisible) {
+          e.preventDefault();
+          setHelpVisible(false);
+          return;
+        }
         if (e.key === "Escape" && selection.size > 0) {
           // Slice 8.14. Esc clears a non-empty selection. Composer-mode
           // is handled by the early return above, so this only fires in
@@ -1334,36 +1346,7 @@ export function App(): JSX.Element {
           searchInputRef.current?.select();
         } else if (e.key === "?") {
           e.preventDefault();
-          alert(
-            [
-              "j / k    move selection between threads",
-              "J / K    expand / collapse next message in thread",
-              "enter    open message (auto-opened in reader)",
-              "/        focus search",
-              "r        reply to latest in thread",
-              "s        star / unstar selected thread",
-              "z / Z    snooze (picker) / unsnooze immediately",
-              "#        trash / untrash selected thread",
-              "e        archive / unarchive selected thread",
-              "Shift+U  mark thread read / unread",
-              "l        label picker (enter toggles, ⌘↩ closes)",
-              "x        add / remove focused thread from selection",
-              "Shift+x  select / deselect all in view",
-              "c        compose new",
-              "⌘↵       send (in composer)",
-              "⇧⌘↵      send reply and archive thread (in composer)",
-              "t        toggle theme",
-              "esc      close composer / clear search / clear selection",
-              "?        this cheat sheet",
-              "",
-              "search operators (ADR-0036)",
-              "  from:bob  subject:invoice  to:alice",
-              "  is:unread | is:starred | is:snoozed",
-              "  has:attachment",
-              "  in:trash | in:archive",
-              '  "quoted phrase"  -from:noreply  (negate with leading -)',
-            ].join("\n"),
-          );
+          setHelpVisible(true);
         } else if (e.key === "t") {
           e.preventDefault();
           toggle();
@@ -1390,6 +1373,7 @@ export function App(): JSX.Element {
         toggleSelection,
         toggleSelectAll,
         clearSelection,
+        helpVisible,
       ],
     ),
     pane.mode !== "composer",
@@ -1648,6 +1632,9 @@ export function App(): JSX.Element {
             onClose={closePicker}
           />
         </div>
+      ) : null}
+      {helpVisible ? (
+        <HelpOverlay onClose={() => setHelpVisible(false)} />
       ) : null}
     </div>
   );
