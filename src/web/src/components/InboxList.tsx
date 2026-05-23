@@ -6,12 +6,30 @@ import {
   shortMessageId,
 } from "../lib/format.ts";
 import { formatSnoozedUntil } from "../lib/snooze-presets.ts";
+import { recipientsOfLatestOutbound } from "../lib/sent-view.ts";
 import { StarButton } from "./Star.tsx";
 import { SnoozeButton } from "./Snooze.tsx";
 import { TrashButton } from "./Trash.tsx";
 import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
 import { LabelChips } from "./LabelChips.tsx";
+
+// ADR-0039 (slice 8.18). The view kind drives a small per-row swap: the
+// left column reads recipients (not senders) in Sent, and the empty
+// state copy varies. "search" is treated as its own kind so search
+// results stay inbox-shaped regardless of which view the operator was
+// in when they started typing. "label" collapses every label-view to
+// the same kind — labels behave like Inbox for projection purposes.
+export type InboxViewKind =
+  | "inbox"
+  | "sent"
+  | "starred"
+  | "snoozed"
+  | "trashed"
+  | "archived"
+  | "drafts"
+  | "label"
+  | "search";
 
 interface InboxListProps {
   threads: Thread[];
@@ -20,6 +38,7 @@ interface InboxListProps {
   loading: boolean;
   offline: boolean;
   searchActive?: boolean;
+  viewKind: InboxViewKind;
   // Slice 8.10 (ADR-0028). Optimistic-pending intent map keyed by rootKey.
   // When a row's rootKey is in the map, the value (true|false) is the
   // operator's intended next state and renders as if the toggle has
@@ -82,6 +101,7 @@ export function InboxList({
   loading,
   offline,
   searchActive = false,
+  viewKind,
   pendingStars,
   onToggleStar,
   pendingSnoozes,
@@ -127,7 +147,9 @@ export function InboxList({
       ? "0 messages · BFF unreachable"
       : searchActive
         ? "0 results · try a different query"
-        : "0 messages · waiting for new mail";
+        : viewKind === "sent"
+          ? "0 sent · compose with c"
+          : "0 messages · waiting for new mail";
     return (
       <div className="inbox-list">
         <div className="inbox-list__empty mono faint">{empty}</div>
@@ -180,7 +202,16 @@ export function InboxList({
         }
 
         const subject = lead.subject ?? "(no subject)";
-        const senderLine = renderSenders(thread.senders);
+        // ADR-0039 (slice 8.18). In Sent the column shows recipients of
+        // the latest outbound row, not senders. Falls back to the
+        // sender line if the thread has no outbound row (defense in
+        // depth — sortByLatestOutbound + hasOutbound filter exclude
+        // these upstream).
+        const senderLine =
+          viewKind === "sent"
+            ? renderRecipients(recipientsOfLatestOutbound(thread)) ||
+              renderSenders(thread.senders)
+            : renderSenders(thread.senders);
         const messageIdExcerpt = shortMessageId(lead.message_id, 14);
         const showSentChip = lead.direction === "out";
         // Star + snooze can only be toggled on threads with a server-stamped
@@ -428,4 +459,15 @@ function renderSenders(senders: string[]): string {
   if (senders.length <= 3) return senders.join(", ");
   const head = senders.slice(0, 3).join(", ");
   return `${head}, +${senders.length - 3}`;
+}
+
+// ADR-0039 (slice 8.18). Sent-view recipient rendering. Same truncation
+// shape as renderSenders so the column stays the same width / visual
+// rhythm. Empty input returns an empty string so the caller can fall
+// back to renderSenders for defense-in-depth on data corruption.
+function renderRecipients(recipients: string[]): string {
+  if (recipients.length === 0) return "";
+  if (recipients.length <= 3) return recipients.join(", ");
+  const head = recipients.slice(0, 3).join(", ");
+  return `${head}, +${recipients.length - 3}`;
 }

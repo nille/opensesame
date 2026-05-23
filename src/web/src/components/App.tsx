@@ -27,6 +27,7 @@ import { DraftsList } from "./DraftsList.tsx";
 import { Reader } from "./Reader.tsx";
 import { LabelPicker, type LabelPresence } from "./LabelPicker.tsx";
 import { groupIntoThreads, type Thread } from "../lib/threading.ts";
+import { sortByLatestOutbound } from "../lib/sent-view.ts";
 import {
   Composer,
   type ComposerReplyParent,
@@ -338,10 +339,17 @@ export function App(): JSX.Element {
     [allThreads, isSnoozedNow, isTrashedNow, isArchivedNow],
   );
 
+  // ADR-0039 (slice 8.18). The Sent view sorts by the latest outbound
+  // row's received_at, not by the thread's overall latest activity —
+  // an inbound reply must not jump a row back to the top of Sent.
+  // sortByLatestOutbound also re-asserts the hasOutbound filter (defense
+  // in depth; the predicate above already excludes inbound-only threads).
   const sentThreads = useMemo(
     () =>
-      allThreads.filter(
-        (t) => t.hasOutbound && !isTrashedNow(t) && !isArchivedNow(t),
+      sortByLatestOutbound(
+        allThreads.filter(
+          (t) => t.hasOutbound && !isTrashedNow(t) && !isArchivedNow(t),
+        ),
       ),
     [allThreads, isTrashedNow, isArchivedNow],
   );
@@ -1471,6 +1479,10 @@ export function App(): JSX.Element {
           threads={threads}
           selectedIdx={selectedIdx}
           onSelect={setSelectedIdx}
+          // ADR-0039 (slice 8.18). Passes the active view down so the row
+          // renderer can swap the left column to recipients when in Sent.
+          // Search bypasses this — searchActive owns the empty-state copy.
+          viewKind={searchActive ? "search" : typeof view === "string" ? view : "label"}
           loading={
             searchActive
               ? searchQueryResult.isFetching && messages.length === 0
