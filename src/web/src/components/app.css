@@ -2156,3 +2156,206 @@ button.inbox-row__label:hover {
   letter-spacing: 0.04em;
   text-align: right;
 }
+
+/* ============================================================
+   RICH TEXT — slice 8.21 (ADR-0042)
+
+   Reader half: .reader__html-* rules style the strip above an HTML
+   message body and the shadow-host div. The shadow root carries its
+   own :host baseline so the email gets host typography until its
+   own styling overrides.
+
+   Composer half: .rich-editor* rules style the TipTap editor and its
+   six-control toolbar. Buttons use mono labels (no icons), inactive
+   ink-muted, hover ink + rule-strong border, active accent + accent
+   border. The `B` button renders bold and the `I` button renders
+   italic so the visual matches the affordance.
+   ============================================================ */
+
+.reader__html {
+  /* Same vertical rhythm as msg-card__body so day/night switching
+     between text and html doesn't shift the page. */
+  margin-top: var(--r-2);
+}
+
+.reader__html-isolate {
+  /* The shadow host. Block-level, baseline tokens flow in via custom
+     properties — see HtmlBody.tsx for the :host stylesheet. */
+  display: block;
+  font-size: var(--t-lg);
+  line-height: var(--lh-prose);
+  color: var(--ink);
+}
+
+.reader__html-blocked {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--r-1);
+  font-size: var(--t-mono-xs);
+  color: var(--ink-muted);
+  margin-bottom: var(--r-2);
+  padding: 0;
+}
+
+.reader__html-blocked-btn {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--rule-strong);
+  padding: 0 2px;
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-xs);
+  color: var(--accent);
+  cursor: pointer;
+  letter-spacing: 0.04em;
+}
+
+.reader__html-blocked-btn:hover {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
+.reader__view-source {
+  display: inline-block;
+  margin-left: var(--r-1);
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-faint);
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+
+.reader__view-source:hover {
+  color: var(--accent);
+}
+
+.reader__view-source[aria-pressed="true"] {
+  color: var(--accent);
+}
+
+/* ---- Composer rich editor ---- */
+
+.rich-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 200px;
+}
+
+.rich-editor__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--r-1);
+  padding: var(--r-1) 0;
+  border-bottom: 1px solid var(--rule);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-sm);
+}
+
+.rich-editor__sep {
+  display: inline-block;
+  width: 1px;
+  height: 14px;
+  background: var(--rule);
+  margin: 0 var(--r-2);
+}
+
+.rich-editor__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 24px;
+  padding: 0 var(--r-2);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--t-mono-sm);
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    color var(--d-fast) var(--ease-out),
+    background-color var(--d-fast) var(--ease-out),
+    border-color var(--d-fast) var(--ease-out);
+}
+
+.rich-editor__btn[data-weight="bold"] {
+  font-weight: 700;
+}
+
+.rich-editor__btn[data-weight="italic"] {
+  font-style: italic;
+}
+
+.rich-editor__btn:hover {
+  color: var(--ink);
+  border-color: var(--rule-strong);
+}
+
+.rich-editor__btn:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.rich-editor__btn--active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.rich-editor__host {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding: var(--r-3) 0;
+}
+
+.rich-editor__host .ProseMirror {
+  outline: none;
+  flex: 1;
+  min-height: 160px;
+  font-family: var(--font-sans);
+  font-size: var(--t-lg);
+  line-height: var(--lh-prose);
+  color: var(--ink);
+}
+
+.rich-editor__host .ProseMirror p {
+  margin: 0 0 var(--r-2);
+}
+
+.rich-editor__host .ProseMirror p:last-child {
+  margin-bottom: 0;
+}
+
+.rich-editor__host .ProseMirror ul,
+.rich-editor__host .ProseMirror ol {
+  margin: 0 0 var(--r-2);
+  padding-left: var(--r-5);
+}
+
+.rich-editor__host .ProseMirror blockquote {
+  margin: 0 0 var(--r-2);
+  padding-left: var(--r-3);
+  border-left: 2px solid var(--rule-strong);
+  color: var(--ink-muted);
+}
+
+.rich-editor__host .ProseMirror a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+/* TipTap's built-in placeholder (we don't load Placeholder extension —
+   keep CSS-only :empty fallback so the empty state still reads well). */
+.rich-editor__host .ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  color: var(--ink-faint);
+  pointer-events: none;
+  height: 0;
+  float: left;
+}

@@ -354,6 +354,10 @@ export type ReadMessageOk = {
   headers: ReadMessageHeaders;
   headers_blob: string;
   body_text: string;
+  // ADR-0042 (slice 8.21): rich-text reading. The BFF re-parses raw_s3_uri
+  // on read and fills this when a text/html part exists. null when no HTML
+  // part was found, the raw fetch failed, or the parser threw.
+  body_html: string | null;
   direction: "in" | "out";
   attachments: StoredAttachment[];
   read_at: string | null;

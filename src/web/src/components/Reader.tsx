@@ -23,6 +23,7 @@ import { TrashButton } from "./Trash.tsx";
 import { ArchiveButton } from "./Archive.tsx";
 import { MarkReadButton } from "./MarkRead.tsx";
 import { LabelChips } from "./LabelChips.tsx";
+import { HtmlBody } from "./HtmlBody.tsx";
 
 interface ReaderProps {
   // The selected thread, or null when nothing is selected. The thread is the
@@ -468,6 +469,11 @@ function MessageView({
 }: MessageViewProps): JSX.Element {
   const queryClient = useQueryClient();
   const messageId = row.message_id;
+  // ADR-0042 (slice 8.21). When the BFF surfaces a non-null body_html, the
+  // reader renders it through HtmlBody by default. The "view source" toggle
+  // is a per-open escape hatch that drops back to the text/plain pre-styled
+  // box; never persisted, never per-sender.
+  const [viewSource, setViewSource] = useState(false);
 
   const query = useQuery({
     queryKey: ["message", messageId],
@@ -565,7 +571,22 @@ function MessageView({
           <dt>date</dt>
           <dd>{msg.headers.date ?? msg.received_at}</dd>
           <dt>id</dt>
-          <dd className="faint">{msg.headers.message_id ?? "—"}</dd>
+          <dd className="faint">
+            {msg.headers.message_id ?? "—"}
+            {msg.body_html !== null ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  className="reader__view-source mono faint"
+                  onClick={() => setViewSource((v) => !v)}
+                  aria-pressed={viewSource}
+                >
+                  {viewSource ? "view html" : "view source"}
+                </button>
+              </>
+            ) : null}
+          </dd>
         </dl>
         <div className="msg-card__actions">
           <button
@@ -584,7 +605,11 @@ function MessageView({
           ) : null}
         </div>
       </div>
-      <div className="msg-card__body">{msg.body_text}</div>
+      {msg.body_html !== null && !viewSource ? (
+        <HtmlBody html={msg.body_html} />
+      ) : (
+        <div className="msg-card__body">{msg.body_text}</div>
+      )}
       {msg.attachments.length > 0 && msg.headers.message_id !== null ? (
         <Attachments
           messageId={msg.headers.message_id}

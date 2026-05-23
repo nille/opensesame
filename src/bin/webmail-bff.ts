@@ -39,7 +39,10 @@ import {
   makeS3AttachmentPresigner,
   makeS3AttachmentWriter,
 } from "../aws/s3-attachment-store.js";
-import { makeS3RawMessageWriter } from "../aws/s3-raw-store.js";
+import {
+  makeS3RawMessageReader,
+  makeS3RawMessageWriter,
+} from "../aws/s3-raw-store.js";
 import { makeSesOutboundMailer } from "../aws/ses.js";
 import { makeHonoApp } from "../bff/hono-app.js";
 import { composeRawMime, type ComposeInput } from "../core/composer.js";
@@ -203,6 +206,7 @@ function main(): void {
     sendEmail,
     attachmentPresigner: makeS3AttachmentPresigner({ client: s3 }),
     attachmentBucket: rawMimeBucket,
+    rawReader: makeS3RawMessageReader({ client: s3 }),
   };
   if (corsOrigin !== undefined) honoDeps.corsOrigin = corsOrigin;
   const app = makeHonoApp(honoDeps);

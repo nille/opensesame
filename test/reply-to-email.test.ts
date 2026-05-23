@@ -32,6 +32,7 @@ function makeParent(over: Partial<ReadMessageOk> = {}): ReadMessageOk {
     },
     headers_blob: "",
     body_text: "hi alice",
+    body_html: null,
     direction: "in",
     attachments: [],
     read_at: null,

@@ -71,6 +71,14 @@ Reader anatomy:
 - subject as h1 (`--t-xl`, weight 600)
 - a small mono block — `from`, `to`, `date`, `message_id` — under the subject, `--ink-muted`
 - body in `--t-lg`, `--ink`, `--font-sans`, max-width 68ch
+- when both `text/plain` and `text/html` parts exist, prefer HTML. The HTML body renders inside a **shadow root** (CSS isolation, not iframe — no cross-origin paperwork) wrapped in `.reader__html-isolate`. The shadow root re-establishes the body tokens (`--ink`, `--font-sans`, `--t-lg`, `max-width: 68ch`) as a baseline; everything beyond that is the email's own styling. A small affordance under the metadata block toggles to `text/plain` source view.
+
+Composer toolbar (when rich text is on):
+- a single horizontal row of mono-labeled affordances — `B`, `I`, `link`, `1.`, `•`, `"` — at the top of the composer body, no icons
+- exactly six controls. The list is closed: bold, italic, link, ordered list, unordered list, blockquote. No font family, no font size, no color picker, no alignment, no indent, no images-in-body, no emoji picker. If a future binding earns its place, it gets added here; until then the surface is closed.
+- inactive controls render as quiet ghost buttons (no fill, `--ink-muted`); active ones flip to accent text. Same chip vocabulary the inbox status pills use.
+- a faint mono separator line under the toolbar joins it visually to the editing surface
+- keyboard hints are tooltips on hover only — `B` shows `⌘B`, `link` shows `⌘K`, etc. The `?` cheat sheet (slice 8.20) lists them too
 
 ## Motion
 
@@ -93,7 +101,10 @@ Reader anatomy:
 - No avatar circles. Sender identity is the email address; display names if RFC 5322 supplies them.
 - No "Mark as read" affordance. Opening a message marks it read; nothing else needs an action.
 - No emojis in UI copy.
-- No HTML body rendering with arbitrary CSS — slice 8 ships text-only body display. Sandboxed HTML lands when we trust the parser more.
+- No HTML body rendering that escapes the isolation boundary. The reader pane mounts received HTML inside a shadow root with sanitization (DOMPurify policy: drop `<script>`, `<style>` outside the shadow, inline event handlers, `javascript:`/`data:` URLs except images, `<iframe>`, `<object>`, `<form>`). Email CSS lives in the shadow; it never reaches the host page.
+- No remote images by default. `<img src="https://...">` and `<img src="data:image/...">` are stripped during sanitization on first render; a single `load remote images` affordance per message replaces them. Inline `cid:` images (referenced from the multipart) are allowed because they're already in S3.
+- No rich-text affordances beyond the closed toolbar list. No font selection, no color, no alignment, no indent buttons, no inline images-in-body, no emoji picker, no GIF picker, no slash command, no AI assistant.
+- No execCommand-driven editor. The editor uses a managed schema (TipTap/ProseMirror) so paste from Word/Google Docs gets normalized to the closed mark/node set, not transcoded as nested `<span style>`.
 
 ## Stack
 

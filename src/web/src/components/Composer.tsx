@@ -16,6 +16,7 @@ import {
   previewReplyTarget,
 } from "../lib/reply-preview.ts";
 import { sendAndArchive } from "../lib/send-and-archive.ts";
+import { RichEditor, isStructurallyTrivial } from "./RichEditor.tsx";
 
 export interface ComposerSeed {
   to?: string;
@@ -145,6 +146,13 @@ export function Composer({
   const [bodyText, setBodyText] = useState(
     resumeDraft?.body_text ?? seed?.bodyText ?? "",
   );
+  // ADR-0042 (slice 8.21). The TipTap editor owns the buffer once the
+  // composer is mounted; bodyHtml mirrors editor.getHTML() and bodyText
+  // mirrors editor.getText(). The composer suppresses body_html on send
+  // when the doc is structurally trivial (no marks/lists/quotes), so
+  // plain prose still ships as a single text/plain part.
+  const [bodyHtml, setBodyHtml] = useState<string>("");
+  const initialBodyText = resumeDraft?.body_text ?? seed?.bodyText ?? "";
   const [replyAll, setReplyAll] = useState(false);
   const [status, setStatus] = useState<
     | { kind: "idle" }
@@ -424,12 +432,17 @@ export function Composer({
       const outcome = await sendAndArchive(archiveThreadId, {
         stampArchive: (tid) => onArchiveStamp?.(tid, true),
         dropArchive: (tid) => onArchiveStampDrop?.(tid),
-        replyToEmail: () =>
-          bff.replyToEmail({
+        replyToEmail: () => {
+          const replyInput: Parameters<typeof bff.replyToEmail>[0] = {
             message_id: parent.message_id,
             body_text: bodyText,
             reply_all: replyAll,
-          }),
+          };
+          if (bodyHtml.length > 0 && !isStructurallyTrivial(bodyHtml)) {
+            replyInput.body_html = bodyHtml;
+          }
+          return bff.replyToEmail(replyInput);
+        },
       });
       const result: ReplyToEmailRpcResult = outcome.reply;
       if (result.kind === "ok") {
@@ -484,6 +497,12 @@ export function Composer({
       subject,
       body_text: bodyText,
     };
+    // ADR-0042: only ship body_html when the doc actually carries
+    // formatting. Plain prose still goes out as a single text/plain
+    // part — the recipient never sees an empty alternative wrapper.
+    if (bodyHtml.length > 0 && !isStructurallyTrivial(bodyHtml)) {
+      input.body_html = bodyHtml;
+    }
     if (ccList.length > 0) input.cc = ccList;
     if (seed?.inReplyTo && seed.inReplyTo.length > 0) {
       input.in_reply_to = seed.inReplyTo;
@@ -629,12 +648,13 @@ export function Composer({
         )}
       </Field>
 
-      <textarea
-        className="composer__body"
-        value={bodyText}
-        onChange={(e) => setBodyText(e.target.value)}
+      <RichEditor
+        initialText={initialBodyText}
         placeholder={replyMode ? "Reply…" : "Body…"}
-        spellCheck
+        onChange={({ html, text }) => {
+          setBodyHtml(html);
+          setBodyText(text);
+        }}
       />
 
       {showAttachUi ? (

@@ -21,6 +21,8 @@ import type {
   PresignAttachmentInput,
 } from "../core/attachment-store.js";
 import { makeAttachmentS3Key } from "../core/attachment-store.js";
+import { parseMime } from "../core/parser.js";
+import type { RawMessageReader } from "../core/raw-store.js";
 import {
   buildReplyComposeInput,
   ReplyParentUnrepliable,
@@ -84,6 +86,10 @@ export type BffDeps = {
   // Bucket holding `attachments/...` objects. Must be the same bucket the
   // ingest/persist-outbound path writes to (the raw-MIME bucket per ADR-0012).
   attachmentBucket?: string;
+  // ADR-0042 (slice 8.21): reading rich text. When provided, get_message
+  // re-parses the raw MIME from S3 and fills body_html on the response. When
+  // absent (tests, CLI drivers), get_message returns body_html: null.
+  rawReader?: RawMessageReader;
 };
 
 // 60s is enough for the browser to follow the redirect immediately. Short
@@ -210,9 +216,33 @@ async function handleGetMessage(
         },
       };
     }
+    if (message.parse_status === "ok") {
+      const bodyHtml = await tryRehydrateHtml(deps, message.raw_s3_uri);
+      return ok({ ...message, body_html: bodyHtml });
+    }
     return ok(message);
   } catch (err) {
     return internalError(err);
+  }
+}
+
+// ADR-0042 (slice 8.21). Best-effort re-parse of the raw MIME object to
+// extract a text/html part for the reader pane. Returns null on every
+// failure path (no raw reader configured, missing S3 object, parser
+// throws, no html part in the message). The dispatcher never propagates
+// these failures: the text/plain render is the always-correct fallback.
+async function tryRehydrateHtml(
+  deps: BffDeps,
+  rawS3Uri: string,
+): Promise<string | null> {
+  if (deps.rawReader === undefined) return null;
+  try {
+    const raw = await deps.rawReader.getRaw(rawS3Uri);
+    if (raw === null) return null;
+    const parsed = parseMime(raw);
+    return parsed.bodyHtml;
+  } catch {
+    return null;
   }
 }
 

@@ -24,3 +24,15 @@ export interface RawMessageWriter {
   // so a retry produces a new version, not a corrupted object.
   putRaw(input: RawObjectInput): Promise<void>;
 }
+
+// ADR-0042 (slice 8.21). Read-side fetch of raw MIME bytes for the BFF's
+// re-parse-on-read path. Separate port from the writer because most callers
+// need write-only or read-only — splitting keeps the dependency surface
+// honest. The dispatcher's getMessage handler is the only consumer today.
+export interface RawMessageReader {
+  // s3Uri: full `s3://bucket/key` form (the same value persisted on the
+  // Messages row's `raw_s3_uri`). Returns the bytes verbatim or null when
+  // the object is missing — callers fail-open to "no HTML body" so a
+  // re-parse miss doesn't shadow the rest of the get_message response.
+  getRaw(s3Uri: string): Promise<Uint8Array | null>;
+}

@@ -226,6 +226,10 @@ function projectOk(
         ? (row["headers_blob"] as string)
         : "",
     body_text: bodyText,
+    // ADR-0042 (slice 8.21): the dispatcher fills body_html via a re-parse
+    // of raw_s3_uri; the reader returns null here so direct callers (CLI,
+    // tests) see the same shape as the dispatcher's pre-rehydrate state.
+    body_html: null,
     direction: readDirection(row),
     attachments: readAttachments(row),
     read_at: nullableString(row["read_at"]),

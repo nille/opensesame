@@ -16,17 +16,18 @@ One user — the operator running the platform. Comfortable with terminals, ADRs
 
 ## Product purpose
 
-Three operations, mirrored from the BFF's RPC surface:
+Mirroring the BFF's RPC surface. The set has grown across slice 8 — labels, drafts, trash, archive, snooze, attachments, search — but the operations stay tool-shaped, not app-shaped:
 
-- **read_inbox** — list newest-first, paginate, optionally filter `since`
-- **get_message** — open one, display headers + body, see the `raw_s3_uri` if curious
-- **send_email** — compose new or reply, surface the BFF's 409 (suppression) and 500 inline
+- **read_inbox** / **search_email** — list newest-first, paginate, optionally filter; search supports `from:`, `subject:`, `to:`, `is:unread`, `is:starred`, `is:snoozed`, `has:attachment`, `in:trash`, `in:archive`, quoted phrases, and negation
+- **get_message** — open one, display headers + body (text/plain or sanitized text/html), see the `raw_s3_uri` if curious, download attachments
+- **send_email** — compose new or reply, with attachments, optionally rich-text — surface the BFF's 409 (suppression) and 500 inline
 
 What it is NOT, ever:
 
-- a generic webmail clone with rich formatting toolbars and folders
-- a thing that hides the underlying infrastructure (raw addresses, message-ids, ULIDs are first-class content, not debug info)
-- a SaaS marketing surface
+- a SaaS marketing surface, or a multi-tenant signup product
+- a thing that hides the underlying infrastructure (raw addresses, message-ids, ULIDs, raw S3 URIs are first-class content, not debug info)
+- a feature-marketing chrome wrapped around mail (no "Compose with AI" buttons, no upsell tiles in empty states, no growth loops)
+- a Gmail clone with avatar circles and card-grid density
 
 ## Tone
 
@@ -39,6 +40,8 @@ Quiet, infrastructural, intentional. Information-first copy: empty states are *i
 - Webmail products with feature-marketing language inside the app
 - Spinners over real content; toasts for state changes that have a place to live inline
 - Modals for things that have a pane
+- Rich-text toolbars that look like a Word toolbar (font family, font size, color picker, alignment, indent, bullet variants, emoji, GIF). Rich text exists in this product — it ships *minimal*: bold, italic, link, ordered list, unordered list, blockquote. Anything beyond that is feature-marketing density, not operator value.
+- HTML-email rendering that lets the email's CSS style the rest of the app. Received HTML renders inside an isolation boundary; remote images are blocked by default.
 
 ## Strategic principles
 

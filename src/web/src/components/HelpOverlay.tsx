@@ -70,6 +70,9 @@ const KEYBINDS: Binding[] = [
     keys: <kbd>⇧⌘↵</kbd>,
     action: "send reply and archive thread (in composer)",
   },
+  { keys: <kbd>⌘B</kbd>, action: "bold (in composer)" },
+  { keys: <kbd>⌘I</kbd>, action: "italic (in composer)" },
+  { keys: <kbd>⌘K</kbd>, action: "add link (in composer)" },
   { keys: <kbd>t</kbd>, action: "toggle theme" },
   {
     keys: <kbd>esc</kbd>,

@@ -180,6 +180,7 @@ describe("dispatch", () => {
       },
       headers_blob: "From: ...",
       body_text: "Hi there.",
+      body_html: null,
       direction: "in" as const,
       attachments: [],
       read_at: null,
@@ -390,6 +391,7 @@ describe("dispatch", () => {
       },
       headers_blob: "",
       body_text: "",
+      body_html: null,
       direction: "in" as const,
       attachments: [
         {
@@ -517,6 +519,7 @@ describe("dispatch", () => {
       },
       headers_blob: "",
       body_text: "",
+      body_html: null,
       direction: "in" as const,
       attachments: [
         {
@@ -986,6 +989,7 @@ describe("dispatch", () => {
       },
       headers_blob: "",
       body_text: "hi alice",
+      body_html: null,
       direction: "in" as const,
       attachments: [],
       read_at: null,

@@ -66,9 +66,10 @@ export function isSkeletonRow(row: StoredRow): row is SkeletonRow {
 // alongside the raw blob (so callers that need exact RFC 5322 bytes for
 // HEADER search per ADR-0004 still have it), plus the assembled body text.
 //
-// bodyHtml and attachments are absent today: the write-side persists only
-// bodyText chunks. They land here in a follow-up slice once the store is
-// extended.
+// ADR-0042 (slice 8.21): body_html is populated on read by the BFF
+// re-parsing raw_s3_uri rather than from a stored chunk. The store side
+// still persists only body_text chunks; the field lands in this projection
+// because the dispatcher injects it before serializing.
 
 export type StoredMessageHeaders = {
   from: string | null;
@@ -109,6 +110,12 @@ export type ReadMessageOk = {
   headers: StoredMessageHeaders;
   headers_blob: string;
   body_text: string;
+  // ADR-0042 (slice 8.21): rich-text reading. Populated by the BFF on
+  // get_message via re-parse from raw_s3_uri; null when no text/html part
+  // exists, the raw fetch failed, or the parse threw. The web reader falls
+  // back to body_text in those cases. Not persisted in DDB chunks; storage
+  // remains text-only.
+  body_html: string | null;
   // ADR-0017: present on every read (defaults to "in" when the row was
   // written before slice 3 and has no `direction` attribute).
   direction: MessageDirection;
