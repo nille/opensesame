@@ -61,41 +61,63 @@ function requireEnv(name: string): string {
   return v;
 }
 
-function main(): void {
-  const region = requireEnv("AWS_REGION");
-  const messagesTable = requireEnv("OPENSESAME_MESSAGES_TABLE");
-  const bodyChunksTable = requireEnv("OPENSESAME_BODY_CHUNKS_TABLE");
-  const auditTable = requireEnv("OPENSESAME_AUDIT_TABLE");
-  const rawMimeBucket = requireEnv("OPENSESAME_RAW_MIME_BUCKET");
-  const messageIdGsiName =
-    process.env["OPENSESAME_MESSAGE_ID_GSI_NAME"] ?? "GSI1";
-  const threadIdGsiName =
-    process.env["OPENSESAME_THREAD_ID_GSI_NAME"] ?? "ThreadIdGSI";
-  const suppressionsTable =
-    process.env["OPENSESAME_SUPPRESSIONS_TABLE"] ?? null;
-  const configurationSetName =
-    process.env["OPENSESAME_SES_CONFIG_SET"] ?? null;
-  // Default lets either loopback variant in (Vite uses 127.0.0.1, humans
-  // type localhost). The env override stays a single string for slice 9.
+// Config + clients separated from app construction so an integration test can
+// substitute stub AWS clients without re-implementing the dep wiring (ADR-0021,
+// PRD: bff-integration-harness). Two prior wiring bugs (missing makeUlid in
+// the reader, missing draft_id in the composer) shipped because no test boots
+// this module — extracting buildBffApp closes that gap.
+export type BffRuntimeConfig = {
+  region: string;
+  messagesTable: string;
+  bodyChunksTable: string;
+  auditTable: string;
+  rawMimeBucket: string;
+  messageIdGsiName: string;
+  threadIdGsiName: string;
+  suppressionsTable: string | null;
+  configurationSetName: string | null;
+  corsOrigin: string | string[] | undefined;
+};
+
+export type BffRuntimeDeps = {
+  ddb: DynamoDBDocumentClient;
+  s3: S3Client;
+  ses: SESv2Client;
+  config: BffRuntimeConfig;
+  now: () => Date;
+};
+
+export function readConfigFromEnv(): BffRuntimeConfig {
   const corsOriginEnv = process.env["OPENSESAME_BFF_CORS_ORIGIN"];
-  const corsOrigin: string | string[] | undefined =
-    corsOriginEnv === undefined ? undefined : corsOriginEnv;
+  return {
+    region: requireEnv("AWS_REGION"),
+    messagesTable: requireEnv("OPENSESAME_MESSAGES_TABLE"),
+    bodyChunksTable: requireEnv("OPENSESAME_BODY_CHUNKS_TABLE"),
+    auditTable: requireEnv("OPENSESAME_AUDIT_TABLE"),
+    rawMimeBucket: requireEnv("OPENSESAME_RAW_MIME_BUCKET"),
+    messageIdGsiName: process.env["OPENSESAME_MESSAGE_ID_GSI_NAME"] ?? "GSI1",
+    threadIdGsiName:
+      process.env["OPENSESAME_THREAD_ID_GSI_NAME"] ?? "ThreadIdGSI",
+    suppressionsTable: process.env["OPENSESAME_SUPPRESSIONS_TABLE"] ?? null,
+    configurationSetName: process.env["OPENSESAME_SES_CONFIG_SET"] ?? null,
+    corsOrigin: corsOriginEnv === undefined ? undefined : corsOriginEnv,
+  };
+}
 
-  const port = Number.parseInt(
-    process.env["OPENSESAME_BFF_PORT"] ?? "3000",
-    10,
-  );
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
-    throw new Error(`OPENSESAME_BFF_PORT must be a valid port, got ${port}`);
-  }
-  const bind = process.env["OPENSESAME_BFF_BIND"] ?? "127.0.0.1";
-  if (!LOOPBACK_BINDS.has(bind)) {
-    throw new Error(
-      `OPENSESAME_BFF_BIND must be a loopback address (127.0.0.1, localhost, ::1) — slice 7 has no auth. Got: ${bind}`,
-    );
-  }
-
-  const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({ region }));
+export function buildBffApp(deps: BffRuntimeDeps): ReturnType<typeof makeHonoApp> {
+  const {
+    region,
+    messagesTable,
+    bodyChunksTable,
+    auditTable,
+    rawMimeBucket,
+    messageIdGsiName,
+    threadIdGsiName,
+    suppressionsTable,
+    configurationSetName,
+    corsOrigin,
+  } = deps.config;
+  const { ddb, s3, ses: sesClient, now } = deps;
   // ADR-0035 (slice 8.17). saveDraft first-save (draft_id=null) needs a
   // ULID factory to mint the new draft id; without it the reader throws
   // and the BFF returns 500. The CLI drivers don't write drafts, so this
@@ -109,8 +131,6 @@ function main(): void {
     makeUlid: makeUlidFactory({ now: () => Date.now() }),
   });
   const auditLog = makeDynamoAuditLog({ client: ddb, auditTable });
-  const sesClient = new SESv2Client({ region });
-  const s3 = new S3Client({ region });
 
   const sendEmail = async (input: SendEmailInput): Promise<SendEmailResult> => {
     const compose: ComposeInput = {
@@ -135,11 +155,11 @@ function main(): void {
       }));
     }
 
-    const composed = composeRawMime(compose, { now: () => new Date() });
+    const composed = composeRawMime(compose, { now });
 
     const mailerDeps: Parameters<typeof makeSesOutboundMailer>[0] = {
       client: sesClient,
-      now: () => new Date(),
+      now,
     };
     if (configurationSetName !== null) {
       mailerDeps.configurationSetName = configurationSetName;
@@ -161,7 +181,7 @@ function main(): void {
       mailer,
       auditLog,
       input: sendInput,
-      now: () => new Date(),
+      now,
       warn: (m) => process.stderr.write(`[warn] ${m}\n`),
     };
     if (suppressionsTable !== null) {
@@ -231,13 +251,41 @@ function main(): void {
     attachmentStager,
   };
   if (corsOrigin !== undefined) honoDeps.corsOrigin = corsOrigin;
-  const app = makeHonoApp(honoDeps);
+  return makeHonoApp(honoDeps);
+}
+
+function main(): void {
+  const config = readConfigFromEnv();
+  const port = Number.parseInt(
+    process.env["OPENSESAME_BFF_PORT"] ?? "3000",
+    10,
+  );
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+    throw new Error(`OPENSESAME_BFF_PORT must be a valid port, got ${port}`);
+  }
+  const bind = process.env["OPENSESAME_BFF_BIND"] ?? "127.0.0.1";
+  if (!LOOPBACK_BINDS.has(bind)) {
+    throw new Error(
+      `OPENSESAME_BFF_BIND must be a loopback address (127.0.0.1, localhost, ::1) — slice 7 has no auth. Got: ${bind}`,
+    );
+  }
+
+  const app = buildBffApp({
+    ddb: DynamoDBDocumentClient.from(
+      new DynamoDBClient({ region: config.region }),
+    ),
+    s3: new S3Client({ region: config.region }),
+    ses: new SESv2Client({ region: config.region }),
+    config,
+    now: () => new Date(),
+  });
+
   const corsBanner =
-    corsOrigin === undefined
+    config.corsOrigin === undefined
       ? "http://localhost:5173, http://127.0.0.1:5173 (default)"
-      : Array.isArray(corsOrigin)
-        ? corsOrigin.join(", ")
-        : corsOrigin;
+      : Array.isArray(config.corsOrigin)
+        ? config.corsOrigin.join(", ")
+        : config.corsOrigin;
 
   serve({ fetch: app.fetch, port, hostname: bind }, (info) => {
     process.stdout.write(
@@ -246,8 +294,8 @@ function main(): void {
         "  Open Sesame webmail BFF (slice 7, ADR-0021)",
         `  listening on http://${info.address}:${info.port}`,
         `  CORS origin:  ${corsBanner}`,
-        `  AWS region:   ${region}`,
-        `  suppressions: ${suppressionsTable ? "enabled" : "disabled (no OPENSESAME_SUPPRESSIONS_TABLE)"}`,
+        `  AWS region:   ${config.region}`,
+        `  suppressions: ${config.suppressionsTable ? "enabled" : "disabled (no OPENSESAME_SUPPRESSIONS_TABLE)"}`,
         "",
         "  ⚠  NO AUTH. Localhost-only. Do not expose externally until slice 9.",
         "",
@@ -264,4 +312,12 @@ function decodeBase64(s: string): Uint8Array {
   return new Uint8Array(Buffer.from(stripped, "base64"));
 }
 
-main();
+// Only boot when run directly (tsx src/bin/webmail-bff.ts). Importing this
+// module in a test gets buildBffApp + readConfigFromEnv without serve().
+const isDirectInvocation =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith("webmail-bff.ts") === true ||
+  process.argv[1]?.endsWith("webmail-bff.js") === true;
+if (isDirectInvocation) {
+  main();
+}
